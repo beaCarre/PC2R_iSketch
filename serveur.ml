@@ -23,11 +23,9 @@ type client = {
   mutable score : int;
 }
 
-
 let clients = ref []
 
 let clients_mutex = Mutex.create()
-
 
 (*gestion graphique*)
 
@@ -42,13 +40,11 @@ type line = {
   y1 : int;
   x2 : int;
   y2 : int;
-(*  color : color;
-  size : int *)
+  color : color;
+  size : int;
 }
 let lines = ref []
-
 let color = {r=0; g=0; b=0}
-
 let size = ref 0
 
 (*var round*)
@@ -175,7 +171,6 @@ let end_round () =
 class timer delay callback = 
 object(self)
   val mutable time = delay 
-
   val mutex = Mutex.create ()
   val mutable thread = None
 
@@ -191,10 +186,8 @@ object(self)
 	 callback ())
       () in
       thread <- Some th
-
   method get_delay = time
   method get_thread = thread
-      
   method set_delay new_delay =
     Mutex.lock mutex;
     time <- new_delay;
@@ -204,78 +197,20 @@ object(self)
     match thread with
       | Some th -> Thread.kill th; thread <- None
       | None -> print_endline "timer already stopped"
-    
 end
-
-(* let timer_word_found () = *)
-(*   print_endline "deb timerWF"; *)
-(*   Unix.sleep timeout; *)
-(*   match !timerWF with *)
-(*     | Some th -> *)
-(*       if th = Thread.self () then *)
-(*         begin *)
-(*           Printf.printf "Fin des %d secondes du mot trouvé\n%!" timeout; *)
-(* 	  begin *)
-(* 	    match !timerR with *)
-(* 	      | Some (t) -> Thread.kill t; *)
-(* 	      | None -> print_endline "TimerR deja None : CHELOU !" *)
-(* 	  end; *)
-(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
-(* 	  timerR := None; *)
-(* 	  begin *)
-(* 	    match !timerWF with *)
-(* 	      | Some (t) -> Thread.kill t; *)
-(* 	      | None -> print_endline "TimerR deja None :: CHELOU !" *)
-(* 	  end; *)
-(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
-(* 	  timerWF := None; *)
-(* 	  end_round () *)
-(*         end *)
-(*       else *)
-(*         Printf.printf "timer_word_found inutile fini\n" *)
-(*     | _ -> Printf.printf "Timer_word_found inutile fini\n" *)
-      
-      
-(* let timer_round () = *)
-(*   print_endline "deb timer"; *)
-(*   Unix.sleep timeRound; *)
-(*   print_endline "fin sleep"; *)
-(*   match !timerR with *)
-(*     | Some th -> *)
-(*       if th = Thread.self () then *)
-(*         begin *)
-(*           Printf.printf "Fin des %d minutes, la round est fini\n%!" timeRound; *)
-(* 	  begin *)
-(* 	    match !timerR with *)
-(* 	      | Some (t) -> Thread.kill t; *)
-(* 	      | None -> print_endline "TimerR deja None : CHELOU !" *)
-(* 	  end; *)
-(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
-(* 	  timerR := None; *)
-(* 	  begin *)
-(* 	    match !timerWF with *)
-(* 	      | Some (t) -> Thread.kill t; *)
-(* 	      | None -> print_endline "TimerR deja None :: CHELOU !" *)
-(* 	  end; *)
-(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
-(* 	  timerWF := None; *)
-(* 	  end_round() *)
-(*         end *)
-(*       else *)
-(*         Printf.printf "Timer_round inutile fini\n" *)
-(*     | _ -> Printf.printf "Timer_round inutile fini\n" *)
-
 
 
 type state = 
 {
   mutable clients : client list;
   mutable lines : line list;
+  mutable cmd : Protocol.command list;
   timer : timer;
 }
 
-let server_state = { clients = []; 
+let server_state = { clients = [];
 		     lines = []; 
+		     cmd = [];
 		     timer = new timer timeRound end_round
 		   }
 
@@ -288,8 +223,8 @@ let drawer_exit client =
 (*TODO traitement sortie dessinateur*)
 
 let set_line  x y u v =
-  lines := {x1= x; y1= y; x2= u; y2= v}::!lines;
-  List.iter (fun c -> my_output_line c.chan 
+  lines := {x1= x; y1= y; x2= u; y2= v; color=color; size=(!size)}::!lines;
+  List.iter (fun c -> my_output_line c.chan
     (Printf.sprintf "LINE/%d/%d/%d/%d/%d/%d/%d/%d/\n%!" x y u v color.r  color.g  color.b !size )) 
     !clients;
   print_endline (Printf.sprintf "set_line %d/%d/%d/%d\n%!" x y u v)
@@ -319,7 +254,7 @@ let guess client proposition (*nth_found*) =
 	  | n -> broadcast (Protocol.Word_found client.name);
 	    client.score_round <- min (10-n-1) 5;
       end;
-      Mutex.unlock clients_mutex
+      Mutex.unlock clients_mutex;
     end
       
   (*incr nth_found
@@ -383,7 +318,8 @@ let treat_connexion user sd =
   Mutex.lock clients_mutex;
   let client = {name=user;chan=sd;role=GUESSER;etat=WAITING;score_round=0;score=0} in
   clients:=client::!clients;
-  my_output_line sd (Printf.sprintf "CONNECTED/%s/\n%!" user);
+  broadcast (Protocol.Connected user);
+  my_output_line sd (Printf.sprintf "WELCOME/%s/\n%!" user);
   if List.length (List.filter (fun c -> c.etat = WAITING) !clients) = max
   then
     start_game ()(* clients ? *)
@@ -392,10 +328,11 @@ let treat_connexion user sd =
   client
 
 let rec rename name i=
-  if List.exists ( fun c -> c.name = name ) !clients then
-    rename (name^"("^string_of_int (i+1)^")") i
+  (*Mutex.lock clients_mutex;*)
+  if List.exists ( fun c -> c.name = (name^"("^string_of_int (i)^")" )) !clients then
+    rename name (i+1)
   else 
-    name
+    (name^"("^string_of_int (i)^")" )
 
 let connexion_client sd sa =
   let recue = my_input_line sd in
