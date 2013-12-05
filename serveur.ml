@@ -23,25 +23,29 @@ type client = {
   mutable score : int;
 }
 
+
 let clients = ref []
 
 let clients_mutex = Mutex.create()
 
 
 (*gestion graphique*)
-type line = {
-  x1 : int;
-  y1 : int;
-  x2 : int;
-  y2 : int;
-}
-let lines = ref []
 
 type color = {
   mutable r : int;
   mutable g : int;
   mutable b : int;
 } 
+
+type line = {
+  x1 : int;
+  y1 : int;
+  x2 : int;
+  y2 : int;
+(*  color : color;
+  size : int *)
+}
+let lines = ref []
 
 let color = {r=0; g=0; b=0}
 
@@ -53,8 +57,8 @@ let mot = ref ""
 let cpt_found = ref 0
 
 (* timers *)
-let timerWF = ref None 
-let timerR = ref None
+(* let timerWF = ref None 
+let timerR = ref None *)
 
 (*serv_addr*)
 let serv_addr = ref (Unix.gethostbyname(Unix.gethostname())).Unix.h_addr_list.(0)
@@ -168,64 +172,112 @@ let end_round () =
 	
 (*timers*)
 
-let timer_word_found () =
-  print_endline "deb timerWF";
-  Unix.sleep timeout;
-  match !timerWF with
-    | Some th ->
-      if th = Thread.self () then
-        begin
-          Printf.printf "Fin des %d secondes du mot trouvé\n%!" timeout;
-	  begin
-	    match !timerR with
-	      | Some (t) -> Thread.kill t; 
-	      | None -> print_endline "TimerR deja None : CHELOU !"
-	  end;
-	  if !timerR = None then print_endline "kill => None !! chelou";
-	  timerR := None;
-	  begin
-	    match !timerWF with
-	      | Some (t) -> Thread.kill t; 
-	      | None -> print_endline "TimerR deja None :: CHELOU !"
-	  end;
-	  if !timerR = None then print_endline "kill => None !! chelou";
-	  timerWF := None;
-	  end_round ()
-        end
-      else
-        Printf.printf "timer_word_found inutile fini\n"
-    | _ -> Printf.printf "Timer_word_found inutile fini\n"
-      
-      
-let timer_round () =
-  print_endline "deb timer";
-  Unix.sleep timeRound;
-  print_endline "fin sleep";
-  match !timerR with
-    | Some th ->
-      if th = Thread.self () then
-        begin
-          Printf.printf "Fin des %d minutes, la round est fini\n%!" timeRound;
-	  begin
-	    match !timerR with
-	      | Some (t) -> Thread.kill t; 
-	      | None -> print_endline "TimerR deja None : CHELOU !"
-	  end;
-	  if !timerR = None then print_endline "kill => None !! chelou";
-	  timerR := None;
-	  begin
-	    match !timerWF with
-	      | Some (t) -> Thread.kill t; 
-	      | None -> print_endline "TimerR deja None :: CHELOU !"
-	  end;
-	  if !timerR = None then print_endline "kill => None !! chelou";
-	  timerWF := None;
-	  end_round()
-        end
-      else
-        Printf.printf "Timer_round inutile fini\n"
-    | _ -> Printf.printf "Timer_round inutile fini\n"
+class timer delay callback = 
+object(self)
+  val mutable time = delay 
 
+  val mutex = Mutex.create ()
+  val mutable thread = None
+
+  method start_count () = 
+    let th = Thread.create 
+      (fun () -> 
+	 while time > 0 do
+	   Thread.delay 1.0;
+	   Mutex.lock mutex;
+	   time <- time - 1;
+	   Mutex.unlock mutex
+	 done;
+	 callback ())
+      () in
+      thread <- Some th
+
+  method get_delay = time
+  method get_thread = thread
+      
+  method set_delay new_delay =
+    Mutex.lock mutex;
+    time <- new_delay;
+    Mutex.unlock mutex
+
+  method stop_timer () = 
+    match thread with
+      | Some th -> Thread.kill th; thread <- None
+      | None -> print_endline "timer already stopped"
+    
+end
+
+(* let timer_word_found () = *)
+(*   print_endline "deb timerWF"; *)
+(*   Unix.sleep timeout; *)
+(*   match !timerWF with *)
+(*     | Some th -> *)
+(*       if th = Thread.self () then *)
+(*         begin *)
+(*           Printf.printf "Fin des %d secondes du mot trouvé\n%!" timeout; *)
+(* 	  begin *)
+(* 	    match !timerR with *)
+(* 	      | Some (t) -> Thread.kill t; *)
+(* 	      | None -> print_endline "TimerR deja None : CHELOU !" *)
+(* 	  end; *)
+(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
+(* 	  timerR := None; *)
+(* 	  begin *)
+(* 	    match !timerWF with *)
+(* 	      | Some (t) -> Thread.kill t; *)
+(* 	      | None -> print_endline "TimerR deja None :: CHELOU !" *)
+(* 	  end; *)
+(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
+(* 	  timerWF := None; *)
+(* 	  end_round () *)
+(*         end *)
+(*       else *)
+(*         Printf.printf "timer_word_found inutile fini\n" *)
+(*     | _ -> Printf.printf "Timer_word_found inutile fini\n" *)
+      
+      
+(* let timer_round () = *)
+(*   print_endline "deb timer"; *)
+(*   Unix.sleep timeRound; *)
+(*   print_endline "fin sleep"; *)
+(*   match !timerR with *)
+(*     | Some th -> *)
+(*       if th = Thread.self () then *)
+(*         begin *)
+(*           Printf.printf "Fin des %d minutes, la round est fini\n%!" timeRound; *)
+(* 	  begin *)
+(* 	    match !timerR with *)
+(* 	      | Some (t) -> Thread.kill t; *)
+(* 	      | None -> print_endline "TimerR deja None : CHELOU !" *)
+(* 	  end; *)
+(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
+(* 	  timerR := None; *)
+(* 	  begin *)
+(* 	    match !timerWF with *)
+(* 	      | Some (t) -> Thread.kill t; *)
+(* 	      | None -> print_endline "TimerR deja None :: CHELOU !" *)
+(* 	  end; *)
+(* 	  if !timerR = None then print_endline "kill => None !! chelou"; *)
+(* 	  timerWF := None; *)
+(* 	  end_round() *)
+(*         end *)
+(*       else *)
+(*         Printf.printf "Timer_round inutile fini\n" *)
+(*     | _ -> Printf.printf "Timer_round inutile fini\n" *)
+
+
+
+type state = 
+{
+  mutable clients : client list;
+  mutable lines : line list;
+  timer : timer;
+}
+
+let server_state = { clients = []; 
+		     lines = []; 
+		     timer = new timer timeRound end_round
+		   }
 
 
 	     (********************** gestion commandes **********************)
@@ -253,10 +305,14 @@ let guess client proposition (*nth_found*) =
       incr cpt_found;
       begin
 	match !cpt_found with
-	  | 1 -> timerWF := Some (Thread.create timer_word_found ());
-	    broadcast (Protocol.Word_found_timeout timeout );
-	    client.score_round <- 10
-	  | nb_guessers -> 
+	  | 1 -> (*let timer = server_state.timer in 
+	      if timer#get_delay > timeout then*)
+	      
+	      server_state.timer#set_delay timeout;
+
+	      broadcast (Protocol.Word_found_timeout timeout );
+	      client.score_round <- 10
+	  | n when n = nb_guessers -> 
 	    broadcast (Protocol.Word_found client.name);
 	    client.score_round <- min (10 - nb_guessers-1) 5;
 	    end_round ()
@@ -274,8 +330,8 @@ let guess client proposition (*nth_found*) =
 
 (********************** gestion jeu **********************)
 
+
 let start_round namedrawer =
-  timerR := None ;(* util?*)
   init_mot ();
   List.iter (fun c -> c.role <- ( if c.name=namedrawer then DRAWER else GUESSER)) !clients;
   List.iter 
@@ -286,26 +342,27 @@ let start_round namedrawer =
 	else (Printf.sprintf "NEW_ROUND/%s/\n" namedrawer ))
     )
     !clients;
-  timerR := Some (Thread.create timer_round ())
-      
-
+  server_state.timer#set_delay 60;
+  server_state.timer#start_count ();
+  match server_state.timer#get_thread with Some t -> Thread.join t | _ -> ()
+    
+    
     
 let start_game () =
   List.iter (fun c -> c.etat <- PLAYING) !clients;
   List.iter (fun c -> start_round c.name) !clients
-			
 
 let th_joueur client =
   while true do
     let commande_recue = my_input_line client.chan in
     let commande = parse_command commande_recue in
-    match client.role , commande with
-      | GUESSER, Protocol.Exit(user) 
-	-> stop_thread_client client.chan
+    match client.role, commande with
+      | GUESSER, Protocol.Exit(user)
+	  -> stop_thread_client client.chan
       | DRAWER, Protocol.Exit(user)
 	-> drawer_exit client
       | GUESSER, Protocol.Guess(word)
-	-> guess client word ;
+	-> guess client word 
       | DRAWER, Protocol.Set_color(r,g,b)
 	-> color.r <- r; 
 	  color.g <- g; 
@@ -398,26 +455,28 @@ let serv_socket_run port =
 
 let () =
   Unix.handle_unix_error serv_socket_run port
-    
-let test () =
-  let l = [
-    "CONNECT/\\\\toto/\n"
-    ; "CONNECT/\\/toto/\n"
-    ; "CONNECT/to\\/to/\n"
-    ; "CONNECT/to\\\\to/\n"
-    ; "CONNECT/toto\\//\n"
-    ; "CONNECT/toto\\\\/\n"
-    ; "SCORE_ROUND/toto/1/\n"
-    ; "NEW_ROUND/toto/\n"
-    ; "NEW_ROUND/toto/1/\n"
-    ; "NEW_ROUND/toto/1.0/\n"
-    ; "SET_COLOR/1/2/3/\n"
-    ; "SET_LINE/1/1/1/1/\n"
-    ; "SET_SIZE/3/\n"
-      
-    ] in
-  List.iter (fun e -> print_endline (Protocol.string_of_command (parse_command e))) l; 
-  print_endline (Protocol.string_of_command (Protocol.Connect("user2")));
-  print_endline (Protocol.string_of_command (Protocol.Connected("user")));
-  print_endline (Protocol.string_of_command (Protocol.Exited("user/\2")));
-  print_endline (Protocol.string_of_command (Protocol.Welcome("user\/3")))
+
+
+(*
+
+Ton programme principal :
+  Pour toujours faire
+     Accepter client
+  Fin pour
+
+Accepter client :
+  let th = Nouveau thread qui écoute tout l'temps le client
+  etat_global reçoit un nouveau client qui contient nom + thread + fd 
+
+
+
+
+
+
+
+
+
+
+
+
+*)
