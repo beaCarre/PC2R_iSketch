@@ -7,12 +7,14 @@ type command =
   | Welcome of string
   | Exit of string
   | Exited of string
-  | New_round of string * string option
+  | New_round of string * string * string option (* modif Oo dans l'énoncé ils ajoutent l'user *)
   | Guess of string
   | Guessed of string * string
   | Word_found of string
   | Word_found_timeout of int
-  | End_round of string * string
+  | End_round of string option * string 
+  (* !!!! Si personne n'a trouvé au bout du temps, on n'envoie pas le
+     vainqueur -> Dahmun doit modifier son protocole aussi *)
   | Score_round of (string * int) list
   | Pass
   | Cheat of string
@@ -47,9 +49,9 @@ let string_of_command = function
 
   | Exited n -> sprintf "EXITED/%s/\n" (secure n)
 
-  | New_round (a, Some b) ->  sprintf "NEW_ROUND/%s/%s/\n" (secure a) (secure b)
+  | New_round (a, b, Some c) ->  sprintf "NEW_ROUND/%s/%s/%s/\n" (secure a) (secure b) (secure c)
 
-  | New_round (a, None) -> sprintf "NEW_ROUND/%s/\n" (secure a)
+  | New_round (a, b, None) -> sprintf "NEW_ROUND/%s/%s/\n" (secure a) (secure b)
 
   | Guess n -> sprintf "GUESS/%s/\n" (secure n)
 
@@ -59,7 +61,8 @@ let string_of_command = function
 
   | Word_found_timeout t -> sprintf "WORD_FOUND_TIMEOUT/%d/\n" t
 
-  | End_round (a, b) -> sprintf "END_ROUND/%s/%s/\n" (secure a) (secure b)
+  | End_round (Some a, b) -> sprintf "END_ROUND/%s/%s/\n" (secure a) (secure b)
+  | End_round (None, b) -> sprintf "END_ROUND/%s/\n" (secure b)
 
   | Score_round l -> 
       "SCORE_ROUND/" ^ 

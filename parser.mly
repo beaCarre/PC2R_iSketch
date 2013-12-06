@@ -42,10 +42,10 @@
       { Exit $3 }
   | EXITED SLASH ident_arg SLASH
       { Exited $3 }
-  | NEW_ROUND SLASH ident_arg SLASH
-      { New_round ($3, None) }
   | NEW_ROUND SLASH ident_arg SLASH ident_arg SLASH
-      { New_round ($3, Some $5) }
+      { New_round ($3, $5, None) }
+  | NEW_ROUND SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH
+      { New_round ($3, $5, Some $7) }
   | GUESS SLASH ident_arg SLASH
       { Guess $3 }
   | GUESSED SLASH ident_arg SLASH ident_arg SLASH
@@ -54,8 +54,12 @@
       { Word_found $3 }
   | WORD_FOUND_TIMEOUT SLASH ident_arg SLASH
       { Word_found_timeout (int_of_string $3) }
-  | END_ROUND SLASH ident_arg SLASH ident_arg SLASH
-      { End_round ($3, $5) }
+
+/*  | END_ROUND SLASH ident_arg SLASH ident_arg SLASH
+      { End_round (Some $3, $5) }
+  | END_ROUND SLASH ident_arg SLASH
+      { End_round (None, $3) } */
+
   | SCORE_ROUND SLASH liste_score SLASH 
       { Score_round $3 }
   | PASS SLASH

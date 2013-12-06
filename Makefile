@@ -3,6 +3,7 @@ EXEC=serveur
 CC=ocamlc
 FLAGS=str.cma unix.cma threads.cma -thread -annot
 
+#SRC=protocol.ml parser.ml lexer.ml serveur_bis.ml
 SRC=protocol.ml parser.ml lexer.ml serveur.ml
 OBJ=$(SRC:.ml=.cmo)
 
