@@ -17,9 +17,13 @@ type player = {
   thread : Thread.t;
   name : string;
   mutable role : role;
+  mutable has_found : bool;
   mutable state : player_state;
   (* T'es sûre qu'on en a besoin et qu'on doit pas juste filer le
      score total du joueur à la fin de chaque tour avec SCORE_ROUND ? *)
+  (* on doit juste filer le scrore qu'a fait un joueur lors du round. le 
+     scrore total de la partie est juste en plus quoi pour voir qui a gagn�,
+     mais inutile*)
   mutable score_round : int;
   mutable score : int;
 }
@@ -43,14 +47,42 @@ type line = {
 type server = {
   mutable clients : player list;
   mutable lines : line list;
+  (*mutable commandes : Protocol.command list*)
 }
 
 let server = {clients = []; lines = []}
 
-(* tmps *)
-let max = 2
-let delay = 60
-let timeout = 20
+(** Arg *)
+
+let timeout = ref 10
+let max = ref 2
+let fdico = ref "dico.txt"
+let port = ref 2013
+let nbReport = ref 3
+let dico = ref []
+let delay = 30
+
+let charger_dico filename =
+  let chan = open_in filename in
+  begin
+    try 
+      while true do
+	let mot = input_line chan in
+	dico := mot::!dico
+      done  
+    with | End_of_file -> close_in chan
+  end
+ 
+let parse_args () =
+  let speclist = [("-timeout", Arg.Set_int timeout, "set timeout");
+		  ("-max", Arg.Set_int max, "set max");
+		  ("-dico", Arg.Set_string fdico, "set fdico");
+		  ("-port", Arg.Set_int port, "set port");
+		  ("-n", Arg.Set_int nbReport, "set nbReport")]    
+  in let usage_msg = "Options available:"
+     in Arg.parse speclist print_endline usage_msg;
+     charger_dico !fdico
+
 
 (** Utils *)
 
@@ -108,7 +140,6 @@ class timer init_delay callback =
 object(self)
   val mutable time = init_delay 
   val mutable running = false
-
   val mutex_delay = Mutex.create ()
   val mutex_running = Mutex.create ()
 
@@ -125,14 +156,13 @@ object(self)
 		done;
 		if running then callback ())
 	      ())
-
   method restart_count () =
     self#stop_timer ();
     self#set_delay init_delay;
     self#start_count ()
 
   method get_current_delay = time
-      
+
   method set_delay new_delay =
     Mutex.lock mutex_delay;
     time <- new_delay;
@@ -161,7 +191,6 @@ let current_round = ref None
 let rec play_round () =
   let round = get_opt !current_round in
   let drawer_name = round.drawer.name in
-
   (* Send NEW_ROUND requests *)
   List.iter 
     (function 
@@ -214,19 +243,24 @@ let evaluate_word player word =
   let round = get_opt !current_round in
   if round.word_to_find = word then begin
       match round.winner with
-	| Some _ -> 
-	  broadcast (Word_found (player.name))
-
+	| Some _ ->
+	  broadcast (Word_found (player.name));
+	  player.has_found <- true;
+	  if List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.clients then
+	    round.timer#set_delay 1 
 	| None -> 
 	  round.winner <- Some player.name;
-	  
+	  player.has_found <- true;
 	  broadcast (Word_found (player.name));
-	  broadcast (Word_found_timeout timeout);
-	  round.timer#set_delay timeout
+	  if List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.clients 
+	  then
+	    round.timer#set_delay 1 
+	  else
+	    begin
+	      round.timer#set_delay !timeout;
+	      broadcast (Word_found_timeout !timeout);
+	    end
   (* todo : mise-à-jour des scores *)
-  (* todo : si tout le monde a trouvé, on peut caler le timer à 1 pour
-     passer dans next_round*)
-
   end else 
     broadcast (Guessed (player.name, word))
       
@@ -236,11 +270,29 @@ let player_scheduling player =
     let cmd = read_and_parse_line player.chan in
     begin
       match cmd with
-	| Connect _ -> 
+	| Connect name ->
 	  Printf.eprintf "Player : %s asking for a connect. => Retarded client\n%!"
 	    player.name
 	| Guess word -> if can_guess player then evaluate_word player word
+	
+	| Set_color (r, g, b) -> ()
 
+	| Set_line ((x1, y1),(x2, y2)) -> ()
+
+	| Set_size s -> ()
+	  
+	| Line ((x1, y1),(x2, y2)), (r, g, b), s -> () 
+
+	| Exit name -> if name = player.name then
+	    begin
+	      round.timer#set_delay 1;
+	      remove_player player;
+	      Thread.exit ();
+	      broadcast (Exited name);
+	      if player.role = Drawer && round.winner = Some player.name  then
+		broadcast (End_Round round.word_to_find)
+		  (* gerer score *)
+	    end
 	(* | ... todo *)
 
 	| p -> Printf.printf "Unhandled request %s\n" (string_of_command p)
@@ -281,9 +333,12 @@ let await_connect sock_descr =
 	match cmd with
 	  | Protocol.Connect(name) -> 
 	    let name = finalize_name name in
-	    send_command sock_descr (Connected name);
+	    send_command sock_descr (Welcome name);
+	    broadcast (Connected name);
 	    name
-	  | _ -> loop () (* si il envoie pas connect, on boucle..? *)
+	  | _ -> loop () (* si il envoie pas connect, on boucle..? 
+			 *)(* oui bien*)
+
       with
 	(* todo exhaustive error patterns - socket failed etc *)
 	| _ -> Printf.eprintf "Client connection failed - discarded...\n%!"; raise Pervasives.Exit
@@ -296,12 +351,13 @@ let start_player player_name sock_descr =
     ; thread = Thread.self ()
     ; name = player_name
     ; role = Undefined
+    ; has_found = false
     ; state = Waiting
     ; score_round = 0
     ; score = 0
     } in
   add_player player;
-  if List.length server.clients = max then 
+  if List.length server.clients = !max then 
     ignore (Thread.create start_playing ());
   player_scheduling player
 
@@ -323,7 +379,7 @@ let start_server port =
     begin
       Unix.setsockopt sd Unix.SO_REUSEADDR true;
       ignore (Thread.create init_new_player sd);
-      print_endline "th client lancé"
+      print_endline "th client lance"
     end
   done
 

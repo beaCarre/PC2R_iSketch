@@ -62,7 +62,7 @@ let serv_addr = ref (Unix.gethostbyname(Unix.gethostname())).Unix.h_addr_list.(0
 (********************** gestion options **********************)
   
 let charger_dico filename =
-  let dico = ref [] in
+ 
   let chan = open_in filename in
   begin
     try 
@@ -73,7 +73,6 @@ let charger_dico filename =
     with  
       | End_of_file -> close_in chan
   end;
-  !dico
     
 let get_option option defaut =
   let res = ref defaut in
@@ -84,14 +83,31 @@ let get_option option defaut =
   done;
   !res
 
+let timeout = ref 10
+let max = ref 2
+let fdico = ref "dico.txt"
+let port = ref 2013
+let nbReport = ref 3
+
+ 
+let parse_args () =
+  let speclist = [("-timeout", Arg.Set_int timeout, "set timeout");
+		  ("-max", Arg.Set_int max, "set max");
+		  ("-dico", Arg.Set_string fdico, "set fdico");
+		  ("-port", Arg.Set_int port, "set port");
+		  ("-n", Arg.Set_int nbReport, "set nbReport")]    
+  in let usage_msg = "Options available:"
+     in Arg.parse speclist print_endline usage_msg
+     
+       
 let timeRound = 20
-
-let timeout = int_of_string (get_option "-timeout" "10")
-let max = int_of_string (get_option "-max" "2")
-let fdico = get_option "-dico" "dico.txt"
-let port = int_of_string (get_option "-port" "2013")
-let nbReport = int_of_string (get_option "-n" "3")
-
+(*
+  let timeout = int_of_string (get_option "-timeout" "10")
+  let max = int_of_string (get_option "-max" "2")
+  let fdico = get_option "-dico" "dico.txt"
+  let port = int_of_string (get_option "-port" "2013")
+  let nbReport = int_of_string (get_option "-n" "3")
+*)
 let dico = charger_dico fdico
 
 

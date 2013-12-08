@@ -15,6 +15,7 @@ type command =
   | End_round of string option * string 
   (* !!!! Si personne n'a trouvé au bout du temps, on n'envoie pas le
      vainqueur -> Dahmun doit modifier son protocole aussi *)
+(* bien vu !! je me posais la question !! *)
   | Score_round of (string * int) list
   | Pass
   | Cheat of string
