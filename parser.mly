@@ -55,10 +55,10 @@
   | WORD_FOUND_TIMEOUT SLASH ident_arg SLASH
       { Word_found_timeout (int_of_string $3) }
 
-/*  | END_ROUND SLASH ident_arg SLASH ident_arg SLASH
-      { End_round (Some $3, $5) }
   | END_ROUND SLASH ident_arg SLASH
-      { End_round (None, $3) } */
+      { End_round (None, $3) } 
+  | END_ROUND SLASH ident_arg SLASH ident_arg SLASH
+      { End_round (Some $3, $5) }
 
   | SCORE_ROUND SLASH liste_score SLASH 
       { Score_round $3 }

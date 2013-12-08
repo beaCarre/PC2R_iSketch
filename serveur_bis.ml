@@ -17,6 +17,7 @@ type player = {
   thread : Thread.t;
   name : string;
   mutable role : role;
+  mutable already_drown : bool;
   mutable has_found : bool;
   mutable state : player_state;
   (* T'es sÃ»re qu'on en a besoin et qu'on doit pas juste filer le
@@ -184,6 +185,7 @@ type round = {
   mutable drawer : player;
   mutable winner : string option;
   mutable word_to_find : string;
+  mutable cpt_found : int;
 }
 
 let current_round = ref None 
@@ -204,26 +206,32 @@ let rec play_round () =
 
 and next_round () =
   let round = get_opt !current_round in
-
+  
   broadcast (End_round (round.winner, round.word_to_find));
   broadcast (Score_round (List.map (function {name=n; score=s; _} -> (n,s)) server.clients));
 
   (* Update drawer / guessers *)
   let rec update_roles l = 
-  match server.clients with
-    | ({role=Drawer; _} as curr_drawer)::next_drawer::t ->
-      curr_drawer.role <- Guesser; next_drawer.role <- Drawer; 
-      round.drawer <- next_drawer;
-    | h::t -> 
-      update_roles t
-    | [] -> raise Pervasives.Exit (* Fin du jeu *)
+    print_endline "update roles";
+    
+    match l with
+      | ({role=Drawer; _ } as curr_drawer)::t ->
+	curr_drawer.role <- Guesser; 
+	curr_drawer.already_drown <- true;
+	update_roles t
+      | ({already_drown =false;_} as next_drawer)::t ->
+	 next_drawer.role <- Drawer;
+	 round.drawer <- next_drawer;
+      | h::t -> 
+	update_roles t
+      | [] -> raise Pervasives.Exit (* Fin du jeu *)
   in
   try 
+    List.iter (fun c -> c.has_found <- false) server.clients;
     update_roles server.clients;
-
     round.word_to_find <- "BLOU"; (* new_word () *)
     round.winner <- None;
-
+    round.cpt_found <- 0;
     print_endline "Fin du tour"; (* debug *)
     Thread.delay 5.;
     print_endline "DÃ©but du nouveau tour"; (* debug *)
@@ -236,34 +244,63 @@ and next_round () =
 let can_guess = function
   | { role = Guesser; state = Playing; _} -> true
   | _ -> false
+let all_has_found () = 
+  List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.clients
 
 (* Handlers *)
 
+let give_score player round =
+  match round.cpt_found with
+    | 1 -> player.score_round <- 10; (* gerer si drawer s'est barré *)round.drawer.score_round <-10
+    | n -> round.drawer.score_round <-(*idem*)round.drawer.score_round -n; 
+      if n < 6 then
+	player.score_round <- 11-n
+      else
+	player.score_round <- 5
+      
+	  
 let evaluate_word player word = 
   let round = get_opt !current_round in
-  if round.word_to_find = word then begin
+  if round.word_to_find = word then 
+    begin (* mutex round ? *)
+      round.cpt_found <- round.cpt_found + 1;
+      give_score player round;
       match round.winner with
 	| Some _ ->
 	  broadcast (Word_found (player.name));
 	  player.has_found <- true;
-	  if List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.clients then
+	  if all_has_found () then
 	    round.timer#set_delay 1 
-	| None -> 
+	| None ->
 	  round.winner <- Some player.name;
 	  player.has_found <- true;
 	  broadcast (Word_found (player.name));
-	  if List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.clients 
+	  if all_has_found ()
 	  then
 	    round.timer#set_delay 1 
 	  else
 	    begin
 	      round.timer#set_delay !timeout;
-	      broadcast (Word_found_timeout !timeout);
+	      broadcast (Word_found_timeout !timeout)
 	    end
-  (* todo : mise-Ã -jour des scores *)
-  end else 
+    end 
+  else 
     broadcast (Guessed (player.name, word))
       
+let treat_exit player =
+  Unix.close player.chan;
+  remove_player player;
+  Thread.exit ();
+  broadcast (Exited player.name)
+	
+let evaluate_exit player name =
+  if name = player.name then
+    begin
+      let round = get_opt !current_round in
+      if player.role = Drawer && round.winner = None  then
+	round.timer#set_delay 1;
+      treat_exit player
+    end
 
 let player_scheduling player =
   let rec loop () =
@@ -274,25 +311,18 @@ let player_scheduling player =
 	  Printf.eprintf "Player : %s asking for a connect. => Retarded client\n%!"
 	    player.name
 	| Guess word -> if can_guess player then evaluate_word player word
-	
+	  else print_endline "cannot guess"
 	| Set_color (r, g, b) -> ()
 
 	| Set_line ((x1, y1),(x2, y2)) -> ()
 
 	| Set_size s -> ()
 	  
-	| Line ((x1, y1),(x2, y2)), (r, g, b), s -> () 
+	| Line (((x1, y1),(x2, y2)), (r, g, b), s) -> () 
 
-	| Exit name -> if name = player.name then
-	    begin
-	      round.timer#set_delay 1;
-	      remove_player player;
-	      Thread.exit ();
-	      broadcast (Exited name);
-	      if player.role = Drawer && round.winner = Some player.name  then
-		broadcast (End_Round round.word_to_find)
-		  (* gerer score *)
-	    end
+	| Exit name -> evaluate_exit player name
+	    (* gerer score *)
+	    
 	(* | ... todo *)
 
 	| p -> Printf.printf "Unhandled request %s\n" (string_of_command p)
@@ -304,6 +334,7 @@ let player_scheduling player =
   with 
     (* todo handle proper exceptions. E.g : connection lost *)
     | _ -> Printf.eprintf "Connection lost - removing player : %s\n%!" player.name;
+      Unix.close player.chan;
       remove_player player;
       Thread.exit ()
 
@@ -321,7 +352,9 @@ let start_playing () =
   current_round := Some { timer= new timer delay next_round;
 			  drawer= List.hd server.clients;
 			  winner = None;			  
-			  word_to_find= "bla" (* new_word () *) };
+			  word_to_find= "bla";(* new_word () *)
+			  cpt_found = 0};
+  
   play_round ()
 	
 (** Connections *)
@@ -351,6 +384,7 @@ let start_player player_name sock_descr =
     ; thread = Thread.self ()
     ; name = player_name
     ; role = Undefined
+    ; already_drown = false
     ; has_found = false
     ; state = Waiting
     ; score_round = 0
@@ -361,12 +395,14 @@ let start_player player_name sock_descr =
     ignore (Thread.create start_playing ());
   player_scheduling player
 
+
+
 let init_new_player sock_descr = 
   try 
     let name = await_connect sock_descr in
     ignore (Thread.create (start_player name) sock_descr)
   with 
-    | Pervasives.Exit -> ()
+    | Pervasives.Exit -> () (*Unix.close sock_descr ? pour éviter lecture loop quand un client *)
       
 let start_server port =
   let sock = ThreadUnix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
@@ -389,4 +425,5 @@ let () =
 "################################################################
 \tSuper server two thousand : online
 ################################################################";
+  parse_args ();
   start_server 2013
