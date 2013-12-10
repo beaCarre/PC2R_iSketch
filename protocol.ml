@@ -7,15 +7,12 @@ type command =
   | Welcome of string
   | Exit of string
   | Exited of string
-  | New_round of string * string * string option (* modif Oo dans l'énoncé ils ajoutent l'user *)
+  | New_round of string * string * string option
   | Guess of string
   | Guessed of string * string
   | Word_found of string
   | Word_found_timeout of int
   | End_round of string option * string 
-  (* !!!! Si personne n'a trouvé au bout du temps, on n'envoie pas le
-     vainqueur -> Dahmun doit modifier son protocole aussi *)
-(* bien vu !! je me posais la question !! *)
   | Score_round of (string * int) list
   | Pass
   | Cheat of string

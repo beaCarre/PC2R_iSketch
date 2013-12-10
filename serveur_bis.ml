@@ -2,6 +2,7 @@ open Protocol
 open Parser
 
 (** types *)
+
 exception Closed_connection
 
 type role =
@@ -40,25 +41,83 @@ type line = {
   size : int;
 }
 
-
 type server = {
   mutable players : player list;
   mutable lines : line list;
+  mutable mots_rounds : string list;
   mutable is_game_started : bool;
   (*mutable commandes : Protocol.command list*)
 }
 
-let server = {players = []; lines = []; is_game_started=false}
+let server = {players = [];
+	      lines = []; 
+	      mots_rounds=[]; 
+	      is_game_started=false}
 
-(** Arg *)
+
+(*************   Timer   *************)
+
+class timer init_delay callback = 
+object(self)
+  val mutable time = init_delay 
+  val mutable running = false
+  val mutex_delay = Mutex.create ()
+  val mutex_running = Mutex.create ()
+
+  method start_count () = 
+    running <- true;
+    ignore (Thread.create 
+	      (fun () -> 
+		 while time > 0 && running
+		 do
+		   Thread.delay 1.0;
+		   Mutex.lock mutex_delay;
+		   time <- time - 1;
+		   Mutex.unlock mutex_delay
+		 done;
+		 if running then callback ())
+	      ())
+  method restart_count () =
+    self#stop_timer ();
+    self#set_delay init_delay;
+    self#start_count ()
+  method get_current_delay = time
+  method set_delay new_delay =
+    Mutex.lock mutex_delay;
+    time <- new_delay;
+    Mutex.unlock mutex_delay
+  method stop_timer () =
+    Mutex.lock mutex_running;
+    running <- false;
+    Mutex.unlock mutex_running
+end
+
+(*************   types part2   *************)
+
+type round = {
+  timer : timer;
+  mutable drawer : player option;
+  mutable winner : string option;
+  mutable word_to_find : string;
+  mutable cpt_found : int;
+  mutable nb_cheat_report : int;
+
+}
+
+let current_round = ref None 
+
+(*************   Args   *************)
 
 let timeout = ref 10
 let max = ref 2
 let fdico = ref "dico.txt"
 let port = ref 2013
 let nbReport = ref 3
+
 let dico = ref []
 let delay = 30
+
+(*************   Utils_args   *************)
 
 let charger_dico filename =
   let chan = open_in filename in
@@ -82,7 +141,7 @@ let parse_args () =
     charger_dico !fdico
 
 
-(** Utils *)
+(*************   Utils   *************)
 
 let parse_command (str : string) : Protocol.command =
   try
@@ -106,6 +165,21 @@ let add_player player =
 
 let remove_player player = 
   server.players <- List.filter ((!=) player) server.players
+
+let new_word () =
+  let round = get_opt !current_round in
+  let mot = ref "" in
+  let rec loop () =
+    let i = Random.int (List.length !dico) in
+    if (List.exists (fun m -> m = (List.nth !dico i)) server.mots_rounds) then
+      loop ()
+    else
+      begin
+	mot := List.nth !dico i;
+	server.mots_rounds <- !mot::server.mots_rounds;
+	!mot
+      end
+  in loop()
 
 let finalize_name name =
   let rec loop n name =
@@ -134,63 +208,16 @@ let send_command (fd : Unix.file_descr) (cmd : Protocol.command) : unit =
 let read_and_parse_line (fd : Unix.file_descr) : Protocol.command =
   parse_command (player_input_line fd)
 
-class timer init_delay callback = 
-object(self)
-  val mutable time = init_delay 
-  val mutable running = false
-  val mutex_delay = Mutex.create ()
-  val mutex_running = Mutex.create ()
-
-  method start_count () = 
-    running <- true;
-    ignore (Thread.create 
-	      (fun () -> 
-		 while time > 0 && running
-		 do
-		   Thread.delay 1.0;
-		   Mutex.lock mutex_delay;
-		   time <- time - 1;
-		   Mutex.unlock mutex_delay
-		 done;
-		 if running then callback ())
-	      ())
-  method restart_count () =
-    self#stop_timer ();
-    self#set_delay init_delay;
-    self#start_count ()
-
-  method get_current_delay = time
-
-  method set_delay new_delay =
-    Mutex.lock mutex_delay;
-    time <- new_delay;
-    Mutex.unlock mutex_delay
-
-  method stop_timer () =
-    Mutex.lock mutex_running;
-    running <- false;
-    Mutex.unlock mutex_running
-end
-
 let broadcast cmd =
   List.iter (fun p -> send_command p.chan cmd) server.players
 
-(** Logic *)
 
-type round = {
-  timer : timer;
-  mutable drawer : player;
-  mutable winner : string option;
-  mutable word_to_find : string;
-  mutable cpt_found : int;
-}
-
-let current_round = ref None 
+(*************   Gestion partie   *************)
   
 let rec play_round () =
   let round = get_opt !current_round in
-  let drawer_name = round.drawer.name in
-    (* Send NEW_ROUND requests *)
+  let drawer = get_opt round.drawer in
+  let drawer_name = drawer.name in
     List.iter 
       (function 
 	 | {chan=fd; role=Drawer; } -> 
@@ -199,44 +226,42 @@ let rec play_round () =
       server.players;
 
     round.timer#restart_count ()
-      
 
 and next_round () =
   let round = get_opt !current_round in
-    
-    broadcast (End_round (round.winner, round.word_to_find));
-    broadcast (Score_round (List.map (function {name=n; score=s; } -> (n,s)) server.players));
-
-    (* Update drawer / guessers *)
-    let rec update_roles l = 
-      print_endline "update roles";
+  (* let drawer = get_opt round.drawer in *)
+  
+  broadcast (End_round (round.winner, round.word_to_find));
+  broadcast (Score_round (List.map (function {name=n; score_round=s; } -> (n,s)) server.players));
+  
+  (* Update drawer / guessers *)
+  let rec update_roles l = 
+    match l with
+      | ({role=Drawer; } as curr_drawer)::t ->
+	curr_drawer.role <- Guesser; 
+	curr_drawer.already_draw <- true;
+	update_roles t
+      | ({already_draw =false;} as next_drawer)::t ->
+	next_drawer.role <- Drawer;
+	drawer <- next_drawer;
+      | h::t -> 
+	update_roles t
+      | [] -> raise Pervasives.Exit (* Fin du jeu *)
+  in
+  try 
+    List.iter (fun c -> c.has_found <- false) server.players;
+    update_roles server.players;
+    round.word_to_find <- new_word(); (* new_word () *)
+    round.winner <- None;
+    round.cpt_found <- 0;
+    print_endline "Fin du tour"; (* debug *)
+    Thread.delay 2.;
+    print_endline "Debut du nouveau tour"; (* debug *)
+    play_round ();
+  with 
+    | Pervasives.Exit -> print_endline "End game"
       
-      match l with
-	| ({role=Drawer; } as curr_drawer)::t ->
-	    curr_drawer.role <- Guesser; 
-	    curr_drawer.already_draw <- true;
-	    update_roles t
-	| ({already_draw =false;} as next_drawer)::t ->
-	    next_drawer.role <- Drawer;
-	    round.drawer <- next_drawer;
-	| h::t -> 
-	    update_roles t
-	| [] -> raise Pervasives.Exit (* Fin du jeu *)
-    in
-      try 
-	List.iter (fun c -> c.has_found <- false) server.players;
-	update_roles server.players;
-	round.word_to_find <- "BLOU"; (* new_word () *)
-	round.winner <- None;
-	round.cpt_found <- 0;
-	print_endline "Fin du tour"; (* debug *)
-	Thread.delay 5.;
-	print_endline "DÃ©but du nouveau tour"; (* debug *)
-	play_round ();
-      with 
-	| Pervasives.Exit -> print_endline "End game"
-
-(* Predicates *)
+(**********   Predicates   **********)
 
 let can_guess = function
   | { role = Guesser; state = Playing; } -> true
@@ -248,7 +273,8 @@ let all_has_found () =
 
 let give_score player round =
   match round.cpt_found with
-    | 1 -> player.score_round <- 10; (* gerer si drawer s'est barré *)round.drawer.score_round <-10
+    | 1 -> player.score_round <- 10;
+       (* gerer si drawer s'est barré *)round.drawer.score_round <-10
     | n -> 
 	round.drawer.score_round <-(*idem*)round.drawer.score_round + 1;
 	player.score_round <- Pervasives.max (11 - n) 5
@@ -292,11 +318,26 @@ let treat_exit player =
 let evaluate_exit player name =
   if name = player.name then
     begin
-      let round = get_opt !current_round in
-	if player.role = Drawer && round.winner = None  then
-	  round.timer#set_delay 1;
-	treat_exit player
+      evaluate_pass player;
+      treat_exit player
     end
+      
+let evaluate_pass player =
+  (* mutex round ? *)
+  let round = get_opt !current_round in
+  if player.role = Drawer && round.winner = None  then
+    begin
+      round.timer#set_delay 1;
+      round.drawer <- None;
+    end
+      
+let evaluate_cheat player name =
+  if name = player.name then
+    begin 
+      let round = get_opt !current_round in
+      round.nb_cheat_report <- round.nb_cheat_report;
+      (* TODO *)
+
 
 let player_scheduling player =
   let rec loop () =
@@ -304,8 +345,12 @@ let player_scheduling player =
       begin
 	match cmd with
 	  | Connect name ->
-	      Printf.eprintf "Player : %s asking for a connect. => Retarded client\n%!"
+	      Printf.eprintf 
+		"Player : %s asking for a connect. => Retarded client\n%!"
 		player.name
+
+	  | Exit name -> evaluate_exit player name
+
 	  | Guess word -> if can_guess player then evaluate_word player word
 	    else print_endline "cannot guess"
 	  | Set_color (r, g, b) -> ()
@@ -316,12 +361,14 @@ let player_scheduling player =
 	      
 	  | Line (((x1, y1),(x2, y2)), (r, g, b), s) -> () 
 
-	  | Exit name -> evaluate_exit player name
-	      (* gerer score *)
 	      
+	  | Pass -> evaluate_pass player
+
+	  | Cheat name -> evaluate_cheat player name
+
 	  (* | ... todo *)
 
-	  | p -> ()(*Printf.printf "Unhandled request %s\n" (string_of_command p)*)
+	  | p -> Printf.printf "Unhandled request %s\n" (string_of_command p)
       end;
       loop ()
   in
@@ -347,9 +394,9 @@ let start_playing () =
   current_round := Some { timer= new timer delay next_round;
 			  drawer= List.hd server.players;
 			  winner = None;			  
-			  word_to_find= "bla";(* new_word () *)
-			  cpt_found = 0};
-  
+			  word_to_find= new_word ();
+			  cpt_found = 0
+			  nb_cheat_report = 0};
   play_round ()
     
 (** Connections *)
@@ -358,11 +405,12 @@ let await_connect sock_descr =
   let rec loop () =
     let cmd = read_and_parse_line sock_descr in
       match cmd with
-	| Protocol.Connect(name) when not server.is_game_started -> 
+	| Connect name when not server.is_game_started -> 
 	    let name = finalize_name name in
 	      send_command sock_descr (Welcome name);
-	      broadcast (Connected name);
+	      
 	      name
+    (*  | Spectator name -> *)
 	| _ -> loop () (* si il envoie pas connect, on boucle..? 
 		       *)(* oui bien*)
   in
@@ -380,13 +428,14 @@ let start_player player_name sock_descr =
     ; score_round = 0
     ; score = 0
     } in
-    add_player player;
-    if List.length server.players = !max then begin
-      ignore (Thread.create start_playing ());
-      server.is_game_started := true;
-    end;
-    player_scheduling player
-
+  add_player player;
+  broadcast (Connected name);
+  if List.length server.players = !max then begin
+    ignore (Thread.create start_playing ());
+    server.is_game_started := true;
+  end;
+  player_scheduling player
+    
 
 
 let init_new_player sock_descr =
