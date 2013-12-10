@@ -36,7 +36,7 @@ serveur.cmo: parser.cmi parser.cmo lexer.cmo
 # -include .depend
 
 clean:
-	rm -f *.cm[io] $(EXEC) *~ parser.ml parser.mli lexer.ml
+	rm -f *.cm[io] $(EXEC) *~ parser.ml parser.mli lexer.ml *.annot
 
 .PHONY: all clean depend
 
