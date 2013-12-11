@@ -26,6 +26,10 @@ let set_color = "SET_COLOR"
 let set_line = "SET_LINE"
 let set_size = "SET_SIZE"
 let line = "LINE"
+let talk = "TALK"
+let listen = "LISTEN"
+let set_courbe = "SET_COURBE"
+let courbe = "COURBE"
 
 let nl = ['\n' '\r']+
 
@@ -72,6 +76,14 @@ rule token = parse
       {SET_SIZE}
   | line
       {LINE}
+  | talk 
+      {TALK}
+  | listen
+      {LISTEN}
+  | set_courbe
+      {SET_COURBE}
+  | courbe
+      {COURBE}
 
   | slash
       {SLASH}

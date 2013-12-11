@@ -27,11 +27,12 @@ type player = {
 }
 
 type color = {
-  r : int;
-  g : int;
-  b : int;
+  mutable r : int;
+  mutable g : int;
+  mutable b : int;
 } 
 
+(*
 type line = {
   x1 : int;
   y1 : int;
@@ -39,20 +40,19 @@ type line = {
   y2 : int;
   color : color;
   size : int;
-}
+}*)
 
 type server = {
   mutable players : player list;
-  mutable lines : line list;
   mutable mots_rounds : string list;
   mutable is_game_started : bool;
-  (*mutable commandes : Protocol.command list*)
+  mutable commandes : Protocol.command list
 }
 
 let server = {players = [];
-	      lines = []; 
 	      mots_rounds=[]; 
-	      is_game_started=false}
+	      is_game_started=false;
+	      commandes = []}
 
 
 (*************   Timer   *************)
@@ -101,7 +101,8 @@ type round = {
   mutable word_to_find : string;
   mutable cpt_found : int;
   mutable nb_cheat_report : int;
-
+  mutable color : color;
+  mutable size : int;
 }
 
 let current_round = ref None 
@@ -191,8 +192,8 @@ let finalize_name name =
     loop 1 name
       
 let player_input_line fd =
-  let s = " " and r = ref ""
-  in while (ThreadUnix.read fd s 0 1 > 0) && s.[0] <> '\n' do r := !r ^s done ;
+  let s = " " and r = ref "" in
+    while (ThreadUnix.read fd s 0 1 > 0) && s.[0] <> '\n' do r := !r ^s done ;
     if String.length !r = 0 then 
       raise Closed_connection;
     !r
@@ -230,8 +231,12 @@ and next_round () =
   let round = get_opt !current_round in
     broadcast (End_round (round.winner, round.word_to_find));
     if round.nb_cheat_report < !nbReport then
-      broadcast (Score_round (List.map (function {name=n; score_round=s; } -> (n,s)) server.players))
-    else (* cheat !! *)
+      begin 
+	let liste_score = (List.map (fun {name=n; score_round=s;} -> (n,s)) server.players)in
+	  List.iter (fun (n,s) -> print_endline (n^" : "^(string_of_int s))) liste_score;
+	  broadcast (Score_round liste_score)
+      end
+    else (* cheat ! *)
       broadcast (Score_round (List.map (function {name=n; } -> (n,0)) server.players));
 	
     (* Update drawer / guessers *)
@@ -251,9 +256,12 @@ and next_round () =
       try 
 	List.iter (fun c -> c.has_found <- false) server.players;
 	update_roles server.players;
-	round.word_to_find <- new_word(); (* new_word () *)
+	round.word_to_find <- new_word();
 	round.winner <- None;
 	round.cpt_found <- 0;
+	round.nb_cheat_report <- 0;
+	round.color.r<-0;round.color.g<-0; round.color.b<-0;
+	round.size<-0;
 	print_endline "Fin du tour"; (* debug *)
 	Thread.delay 2.;
 	print_endline "Debut du nouveau tour"; (* debug *)
@@ -338,8 +346,6 @@ let evaluate_exit player name =
       evaluate_pass player;
       treat_exit player
     end
-      
-
 	
 let evaluate_cheat player name =
   if name = player.name then
@@ -357,6 +363,11 @@ let evaluate_cheat player name =
 		end
     end
 
+let evaluate_set_line x1 y1 x2 y2 =
+  let round = get_opt !current_round in
+  let color = round.color in
+    broadcast ( Line (((x1, y1),(x2, y2)), (color.r, color.g, color.b), round.size))
+
 
 let player_scheduling player =
   let rec loop () =
@@ -370,23 +381,32 @@ let player_scheduling player =
 
 	  | Exit name -> evaluate_exit player name
 
-	  | Guess word -> if can_guess player then evaluate_word player word
-	    else print_endline "cannot guess"
-	  | Set_color (r, g, b) -> ()
+	  | Guess word -> 
+	      if can_guess player then evaluate_word player word
+	      else print_endline "cannot guess"
+	  | Set_color (r, g, b) -> 
+	      let round = get_opt !current_round in
+		round.color.r <- r;
+		round.color.g <- g;
+		round.color.b <- b
+	      	      
+	  | Set_line ((x1, y1),(x2, y2)) -> evaluate_set_line x1 y1 x2 y2
 	      
-	  | Set_line ((x1, y1),(x2, y2)) -> ()
-	      
-	  | Set_size s -> ()
-	      
-	  | Line (((x1, y1),(x2, y2)), (r, g, b), s) -> () 
-	      
+	  | Set_size s ->  let round = get_opt !current_round in round.size <- s;
 	      
 	  | Pass -> evaluate_pass player
 	      
 	  | Cheat name -> evaluate_cheat player name
 
-	  (* | ... todo *)
+	  | Talk message -> broadcast (Listen (player.name, message))
 
+	  | Set_courbe  ((x1, y1),(x2, y2), (x3, y3),(x4, y4)) ->
+	      let round = get_opt !current_round in
+	      let c = round.color in
+		broadcast (Courbe (
+			     ((x1, y1),(x2, y2), (x3, y3),(x4, y4)), 
+			     (c.r, c.g, c.b), round.size))
+		  
 	  | p -> Printf.printf "Unhandled request %s\n" (string_of_command p)
       end;
       loop ()
@@ -400,11 +420,8 @@ let player_scheduling player =
 	  evaluate_exit player player.name
 
 let start_playing () =
-  (* Peut-etre un mutex à caler dans cette fonction pour les états *)
+  (* Peut-etre un mutex à caler dans cette fonction pour les etats *)
 
-  (* on dispose les players par ordre d'arrivée *)
-  server.players <- List.rev server.players;
-  
   (* Tous deviennent joueur *)
   List.iter (fun p -> p.state <- Playing; p.role <- Guesser) server.players;
   (* Le premier dessine, les autres devinent *)
@@ -415,7 +432,9 @@ let start_playing () =
 			  winner = None;			  
 			  word_to_find= new_word ();
 			  cpt_found = 0;
-			  nb_cheat_report = 0};
+			  nb_cheat_report = 0;
+			  color = {r=0;g=0;b=0};
+			  size = 0};
   play_round ()
     
 (** Connections *)
@@ -465,7 +484,8 @@ let init_new_player sock_descr =
 	
 let start_server port =
   let sock = ThreadUnix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-  let addr = Unix.inet_addr_of_string "127.0.0.1" in
+  let addr = Unix.inet_addr_any in
+    (*Unix.inet_addr_of_string "127.0.0.1" in*)
     (* (Unix.gethostbyname(Unix.gethostname()).Unix.h_addr_list.(0)) in *)	
     Unix.bind sock (Unix.ADDR_INET(addr,port));
     Unix.listen sock 3;

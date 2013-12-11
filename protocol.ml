@@ -20,6 +20,10 @@ type command =
   | Set_line of (int*int)*(int*int)
   | Set_size of int
   | Line of ((int*int)*(int*int)) * (int * int * int) * int
+  | Talk of string
+  | Listen of string * string
+  | Set_courbe of (int*int)*(int*int)*(int*int)*(int*int)
+  | Courbe of ((int*int)*(int*int)*(int*int)*(int*int)) * (int * int * int) * int
   | Malformed
 
 (**
@@ -65,7 +69,7 @@ let string_of_command = function
   | Score_round l -> 
       "SCORE_ROUND/" ^ 
 	List.fold_left 
-	(fun acc (a,b) -> secure a ^ "/" ^ (string_of_int b) ^ "/") "" l ^ "\n"
+	(fun acc (a,b) -> acc ^ secure a ^ "/" ^ (string_of_int b) ^ "/") "" l ^ "\n"
 
   | Pass -> "PASS/\n"
 
@@ -79,5 +83,16 @@ let string_of_command = function
 
   | Line (((x,y),(u,v)), (r, g, b), s) -> 
       sprintf "LINE/%d/%d/%d/%d/%d/%d/%d/%d/\n" x y u v r g b s
+
+  | Talk n -> sprintf "TALK/%s/\n" (secure n)
+
+  | Listen (a, b) -> sprintf "LISTEN/%s/%s/\n" (secure a) (secure b)
+
+  | Set_courbe ((x1,y1), (x2,y2), (x3,y3), (x4,y4)) -> 
+      sprintf "SET_COURBE/%d/%d/%d/%d/%d/%d/%d/%d/\n" x1 y1 x2 y2 x3 y3 x4 y4
+
+  | Courbe (((x1,y1), (x2,y2), (x3,y3), (x4,y4)), (r, g, b), s) ->
+      sprintf "COURBE/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/\n" 
+	x1 y1 x2 y2 x3 y3 x4 y4 r g b s
 
   | Malformed -> "error"

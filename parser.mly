@@ -8,6 +8,7 @@
 %token NEW_ROUND GUESS GUESSED WORD_FOUND WORD_FOUND_TIMEOUT END_ROUND
 %token SCORE_ROUND PASS CHEAT 
 %token SET_COLOR SET_LINE SET_SIZE LINE
+%token TALK LISTEN SET_COURBE COURBE
   
 %token <int> NUM
 %token <string> IDENT
@@ -72,11 +73,29 @@
       { Set_size (int_of_string $3) }
   | SET_LINE SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH
       { Set_line ((int_of_string $3, int_of_string $5), (int_of_string $7, int_of_string $9))}
+
   | LINE SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH 
       ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH
       { Line (((int_of_string $3,int_of_string $5),(int_of_string $7,int_of_string $9)),
 	      (int_of_string $11, int_of_string $13, int_of_string $15), int_of_string $17) }
-     
+
+  | TALK SLASH ident_arg SLASH 
+      { Talk $3 }
+  | LISTEN SLASH ident_arg SLASH ident_arg SLASH 
+      { Listen ($3,$5)}
+
+  | SET_COURBE SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH 
+      ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH
+      { Set_courbe ((int_of_string $3, int_of_string $5), (int_of_string $7, int_of_string $9), 
+		    (int_of_string $11, int_of_string $13), (int_of_string $15, int_of_string $17))}
+
+  | COURBE SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH 
+      ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH ident_arg SLASH 
+      ident_arg SLASH ident_arg SLASH ident_arg SLASH
+      { Courbe (((int_of_string $3,int_of_string $5),(int_of_string $7,int_of_string $9),
+	       (int_of_string $11,int_of_string $13),(int_of_string $15,int_of_string $17)),
+	      (int_of_string $19, int_of_string $21, int_of_string $23), int_of_string $25) }
+      
       ident_arg:
   | ident_arg ASLASH SLASH 
       {  $1 ^ "/" }
