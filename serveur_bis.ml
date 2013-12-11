@@ -108,14 +108,14 @@ let current_round = ref None
 
 (*************   Args   *************)
 
-let timeout = ref 10
+let timeout = ref 20
 let max = ref 2
 let fdico = ref "dico.txt"
 let port = ref 2013
 let nbReport = ref 3
 
 let dico = ref []
-let delay = 30
+let delay = 60
 
 (*************   Utils_args   *************)
 
@@ -167,18 +167,17 @@ let remove_player player =
   server.players <- List.filter ((!=) player) server.players
 
 let new_word () =
-  let round = get_opt !current_round in
   let mot = ref "" in
   let rec loop () =
     let i = Random.int (List.length !dico) in
-    if (List.exists (fun m -> m = (List.nth !dico i)) server.mots_rounds) then
-      loop ()
-    else
-      begin
-	mot := List.nth !dico i;
-	server.mots_rounds <- !mot::server.mots_rounds;
-	!mot
-      end
+      if (List.exists (fun m -> m = (List.nth !dico i)) server.mots_rounds) then
+	loop ()
+      else
+	begin
+	  mot := List.nth !dico i;
+	  server.mots_rounds <- !mot::server.mots_rounds;
+	  !mot
+	end
   in loop()
 
 let finalize_name name =
@@ -213,7 +212,7 @@ let broadcast cmd =
 
 
 (*************   Gestion partie   *************)
-  
+    
 let rec play_round () =
   let round = get_opt !current_round in
   let drawer = get_opt round.drawer in
@@ -229,38 +228,39 @@ let rec play_round () =
 
 and next_round () =
   let round = get_opt !current_round in
-  (* let drawer = get_opt round.drawer in *)
-  
-  broadcast (End_round (round.winner, round.word_to_find));
-  broadcast (Score_round (List.map (function {name=n; score_round=s; } -> (n,s)) server.players));
-  
-  (* Update drawer / guessers *)
-  let rec update_roles l = 
-    match l with
-      | ({role=Drawer; } as curr_drawer)::t ->
-	curr_drawer.role <- Guesser; 
-	curr_drawer.already_draw <- true;
-	update_roles t
-      | ({already_draw =false;} as next_drawer)::t ->
-	next_drawer.role <- Drawer;
-	drawer <- next_drawer;
-      | h::t -> 
-	update_roles t
-      | [] -> raise Pervasives.Exit (* Fin du jeu *)
-  in
-  try 
-    List.iter (fun c -> c.has_found <- false) server.players;
-    update_roles server.players;
-    round.word_to_find <- new_word(); (* new_word () *)
-    round.winner <- None;
-    round.cpt_found <- 0;
-    print_endline "Fin du tour"; (* debug *)
-    Thread.delay 2.;
-    print_endline "Debut du nouveau tour"; (* debug *)
-    play_round ();
-  with 
-    | Pervasives.Exit -> print_endline "End game"
-      
+    broadcast (End_round (round.winner, round.word_to_find));
+    if round.nb_cheat_report < !nbReport then
+      broadcast (Score_round (List.map (function {name=n; score_round=s; } -> (n,s)) server.players))
+    else (* cheat !! *)
+      broadcast (Score_round (List.map (function {name=n; } -> (n,0)) server.players));
+	
+    (* Update drawer / guessers *)
+    let rec update_roles l = 
+      match l with
+	| ({role=Drawer; } as curr_drawer)::t ->
+	    curr_drawer.role <- Guesser; 
+	    curr_drawer.already_draw <- true;
+	    update_roles t
+	| ({already_draw =false;} as next_drawer)::t ->
+	    next_drawer.role <- Drawer;
+	    (get_opt !current_round).drawer <- Some next_drawer;
+	| h::t -> 
+	    update_roles t
+	| [] -> raise Pervasives.Exit (* Fin du jeu *)
+    in
+      try 
+	List.iter (fun c -> c.has_found <- false) server.players;
+	update_roles server.players;
+	round.word_to_find <- new_word(); (* new_word () *)
+	round.winner <- None;
+	round.cpt_found <- 0;
+	print_endline "Fin du tour"; (* debug *)
+	Thread.delay 2.;
+	print_endline "Debut du nouveau tour"; (* debug *)
+	play_round ();
+      with 
+	| Pervasives.Exit -> print_endline "End game"
+	    
 (**********   Predicates   **********)
 
 let can_guess = function
@@ -274,12 +274,20 @@ let all_has_found () =
 let give_score player round =
   match round.cpt_found with
     | 1 -> player.score_round <- 10;
-       (* gerer si drawer s'est barré *)round.drawer.score_round <-10
-    | n -> 
-	round.drawer.score_round <-(*idem*)round.drawer.score_round + 1;
-	player.score_round <- Pervasives.max (11 - n) 5
-	    
-	    
+	begin
+	  try 
+	    let drawer = get_opt round.drawer in 
+	      drawer.score_round <-10 
+	  with | _ -> () (* drawer a quitté la partie ou a pass*)
+	end
+    | n ->  player.score_round <- Pervasives.max (11 - n) 5;
+	try 
+	  let drawer = get_opt round.drawer in 
+	    drawer.score_round <- drawer.score_round + 1;
+	with | _ -> () (* drawer a quitté la partie ou a pass*)
+	 
+	  
+	  
 let evaluate_word player word = 
   let round = get_opt !current_round in
     if round.word_to_find = word then 
@@ -315,6 +323,15 @@ let treat_exit player =
   Thread.exit ();
   broadcast (Exited player.name)
     
+let evaluate_pass player =
+  (* mutex round ? *)
+  let round = get_opt !current_round in
+    if player.role = Drawer && round.winner = None  then
+      begin
+	round.timer#set_delay 1;
+	round.drawer <- None;
+      end
+	
 let evaluate_exit player name =
   if name = player.name then
     begin
@@ -322,21 +339,23 @@ let evaluate_exit player name =
       treat_exit player
     end
       
-let evaluate_pass player =
-  (* mutex round ? *)
-  let round = get_opt !current_round in
-  if player.role = Drawer && round.winner = None  then
-    begin
-      round.timer#set_delay 1;
-      round.drawer <- None;
-    end
-      
+
+	
 let evaluate_cheat player name =
   if name = player.name then
     begin 
       let round = get_opt !current_round in
-      round.nb_cheat_report <- round.nb_cheat_report;
-      (* TODO *)
+	match round.drawer with
+	  | None -> () (* cheat : drawer deja parti*)
+	  | Some drawer ->
+	      round.nb_cheat_report <- round.nb_cheat_report +1;
+	      if round.nb_cheat_report >= !nbReport then
+		begin
+		  round.timer#set_delay 1;
+		  round.drawer <- None;
+		  treat_exit drawer;
+		end
+    end
 
 
 let player_scheduling player =
@@ -354,16 +373,16 @@ let player_scheduling player =
 	  | Guess word -> if can_guess player then evaluate_word player word
 	    else print_endline "cannot guess"
 	  | Set_color (r, g, b) -> ()
-
+	      
 	  | Set_line ((x1, y1),(x2, y2)) -> ()
-
+	      
 	  | Set_size s -> ()
 	      
 	  | Line (((x1, y1),(x2, y2)), (r, g, b), s) -> () 
-
+	      
 	      
 	  | Pass -> evaluate_pass player
-
+	      
 	  | Cheat name -> evaluate_cheat player name
 
 	  (* | ... todo *)
@@ -392,10 +411,10 @@ let start_playing () =
   (List.hd server.players).role <- Drawer;
   
   current_round := Some { timer= new timer delay next_round;
-			  drawer= List.hd server.players;
+			  drawer= Some (List.hd server.players);
 			  winner = None;			  
 			  word_to_find= new_word ();
-			  cpt_found = 0
+			  cpt_found = 0;
 			  nb_cheat_report = 0};
   play_round ()
     
@@ -410,9 +429,8 @@ let await_connect sock_descr =
 	      send_command sock_descr (Welcome name);
 	      
 	      name
-    (*  | Spectator name -> *)
-	| _ -> loop () (* si il envoie pas connect, on boucle..? 
-		       *)(* oui bien*)
+		(*  | Spectator name -> *)
+	| _ -> loop ()
   in
     loop ()
 
@@ -428,14 +446,14 @@ let start_player player_name sock_descr =
     ; score_round = 0
     ; score = 0
     } in
-  add_player player;
-  broadcast (Connected name);
-  if List.length server.players = !max then begin
-    ignore (Thread.create start_playing ());
-    server.is_game_started := true;
-  end;
-  player_scheduling player
-    
+    add_player player;
+    broadcast (Connected player_name);
+    if List.length server.players = !max then begin
+      ignore (Thread.create start_playing ());
+      server.is_game_started <- true;
+    end;
+    player_scheduling player
+      
 
 
 let init_new_player sock_descr =
