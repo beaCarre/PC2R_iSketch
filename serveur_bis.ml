@@ -286,13 +286,13 @@ let give_score player round =
 	  try 
 	    let drawer = get_opt round.drawer in 
 	      drawer.score_round <-10 
-	  with | _ -> () (* drawer a quitté la partie ou a pass*)
+	  with | _ -> () (* drawer a quittï¿½ la partie ou a pass*)
 	end
     | n ->  player.score_round <- Pervasives.max (11 - n) 5;
 	try 
 	  let drawer = get_opt round.drawer in 
 	    drawer.score_round <- drawer.score_round + 1;
-	with | _ -> () (* drawer a quitté la partie ou a pass*)
+	with | _ -> () (* drawer a quittï¿½ la partie ou a pass*)
 	 
 	  
 	  
@@ -447,8 +447,10 @@ let await_connect sock_descr =
 	    let name = finalize_name name in
 	      send_command sock_descr (Welcome name);
 	      
-	      name
-		(*  | Spectator name -> *)
+	      name(* , 1*)
+		(*  | Spectator name -> 
+			name = finalize_name name in
+			(name, 2)*)
 	| _ -> loop ()
   in
     loop ()
@@ -473,12 +475,20 @@ let start_player player_name sock_descr =
     end;
     player_scheduling player
       
-
+(* 
+let start_spectator player_name sock_descr =
+	let spectator = 
+	{chan = sock_descr
+	; thread = Thread.self ()
+*)
 
 let init_new_player sock_descr =
   try 
     let name = await_connect sock_descr in
+    (* match await_connect sock_descr with
+    	| (name, 1) -> *)
       start_player name sock_descr
+      (* | (name, 2) start_spectator name sock_descr *)
   with 
     | Closed_connection -> Printf.eprintf "[Warning] Aborted connection\n%!"; Unix.close sock_descr
 	
@@ -493,7 +503,7 @@ let start_server port =
       let sd, _ = ThreadUnix.accept sock in
 	begin
 	  Unix.setsockopt sd Unix.SO_REUSEADDR true;
-	  ignore (Thread.create init_new_player sd);
+	  ignore (Thread.create init_new_player sd); (*init_new_cleint*)
 	  print_endline "th client lance"
 	end
     done
