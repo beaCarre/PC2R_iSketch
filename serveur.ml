@@ -187,7 +187,7 @@ let finalize_name name =
     in
     loop 1 name
   else name
-    
+
 let player_input_line fd =
   let s = " " and r = ref "" in
     while (ThreadUnix.read fd s 0 1 > 0) && s.[0] <> '\n' do r := !r ^s done ;
@@ -196,7 +196,7 @@ let player_input_line fd =
     !r
       
 let player_output_line fd str =
-  ignore (ThreadUnix.write fd str 0 (String.length str));
+  ignore (ThreadUnix.write fd str 0 (String.length str))
   (*Printf.printf " command send : %s\n%!" str*)
 
 let send_command (fd : Unix.file_descr) (cmd : Protocol.command) : unit =
@@ -210,6 +210,12 @@ let broadcast cmd =
   List.iter(fun s -> send_command s cmd) server.spectators;
   server.commandes <- cmd::server.commandes
 
+let treat_exit player =
+  Printf.printf "treat_exit %s\n%!" player.name;
+  Unix.close player.chan;
+  remove_player player;
+  Thread.exit ();
+  broadcast (Exited player.name)
 
 (*************   Gestion partie   *************)
     
@@ -326,13 +332,7 @@ let evaluate_word player word =
     else 
       broadcast (Guessed (word, player.name))
 	
-let treat_exit player =
-  Printf.printf "treat_exit %s\n%!" player.name;
-  Unix.close player.chan;
-  remove_player player;
-  Thread.exit ();
-  broadcast (Exited player.name)
-    
+
 let evaluate_pass player =
   (* mutex round ? *)
   let round = get_opt !current_round in
@@ -416,7 +416,7 @@ let player_scheduling player =
 		((x1, y1),(x2, y2), (x3, y3),(x4, y4)), 
 		(c.r, c.g, c.b), round.size))
 		
-	  | p -> Printf.printf "Unhandled request from %s : %s\n" player.name (string_of_command p)
+	  | p -> Printf.printf "Unhandled request from %s : %s\n%!" player.name (string_of_command p)
       end;
       loop ()
   in
@@ -493,7 +493,7 @@ let start_spectator sock_descr =
 	  Unix.close sock_descr; 
 	  server.spectators <- List.filter ((!=) sock_descr) server.spectators;
 	  Thread.exit ()
-	| c -> Printf.printf "Unhandled request spectator %s\n" (string_of_command c)
+	| c -> Printf.printf "Unhandled request spectator %s\n%!" (string_of_command c)
     done
   with |Closed_connection -> 
     Unix.close sock_descr; 
