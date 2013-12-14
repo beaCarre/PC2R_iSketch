@@ -177,15 +177,17 @@ let new_word () =
   in loop()
 
 let finalize_name name =
-  let rec loop n name =
-    if List.exists(function p -> p.name = name) server.players
-    then
-      loop (n + 1) (Printf.sprintf "%s(%d)" name n)
-    else 
-      name
-  in
+  if List.exists (function p -> p.name = name ) server.players then
+    let rec loop n name =
+      if List.exists (function p -> p.name = (Printf.sprintf "%s(%d)" name n) ) server.players
+      then
+	loop (n + 1) name
+      else 
+	(Printf.sprintf "%s(%d)" name n)
+    in
     loop 1 name
-      
+  else name
+    
 let player_input_line fd =
   let s = " " and r = ref "" in
     while (ThreadUnix.read fd s 0 1 > 0) && s.[0] <> '\n' do r := !r ^s done ;
@@ -195,7 +197,7 @@ let player_input_line fd =
       
 let player_output_line fd str =
   ignore (ThreadUnix.write fd str 0 (String.length str));
-  Printf.printf " command send : %s\n%!" str
+  (*Printf.printf " command send : %s\n%!" str*)
 
 let send_command (fd : Unix.file_descr) (cmd : Protocol.command) : unit =
   player_output_line fd (string_of_command cmd)
@@ -205,7 +207,7 @@ let read_and_parse_line (fd : Unix.file_descr) : Protocol.command =
 
 let broadcast cmd =
   List.iter (fun p -> send_command p.chan cmd) server.players;
-  List.iter(fun c -> send_command c cmd) server.spectators;
+  List.iter(fun s -> send_command s cmd) server.spectators;
   server.commandes <- cmd::server.commandes
 
 
@@ -259,25 +261,26 @@ and next_round () =
 	round.nb_cheat_report <- 0;
 	round.color.r<-0;round.color.g<-0; round.color.b<-0;
 	round.size<-0;
-	print_endline "Fin du tour"; (* debug *)
+	print_endline "Fin du tour"; 
 	Thread.delay 2.;
-	print_endline "Debut du nouveau tour"; (* debug *)
+	print_endline "Debut du nouveau tour"; 
 	play_round ();
       with 
-	| Pervasives.Exit -> 
+	| Pervasives.Exit ->
+	  List.iter (fun p -> treat_exit p) server.players;
 	  init_server ();
 	  print_endline "End game"
 	    
 (**********   Predicates   **********)
 
 let can_guess = function
-  | { role = Guesser; state = Playing; } -> true
+  | { role = Guesser; state = Playing; has_found = false } -> true
   | _ -> false
 let all_has_found () = 
   List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.players
-
+    
 (* Handlers *)
-
+    
 let give_score player round =
   match round.cpt_found with
     | 1 -> player.score_round <- 10;
@@ -383,30 +386,37 @@ let player_scheduling player =
 	  | Guess word -> 
 	      if can_guess player then evaluate_word player word
 	      else print_endline "cannot guess"
-	  | Set_color (r, g, b) -> 
+	  | Set_color (r, g, b) -> if player.role = Drawer then 
 	      let round = get_opt !current_round in
 		round.color.r <- r;
 		round.color.g <- g;
 		round.color.b <- b
 	      	      
-	  | Set_line ((x1, y1),(x2, y2)) -> evaluate_set_line x1 y1 x2 y2
-	      
-	  | Set_size s ->  let round = get_opt !current_round in round.size <- s;
-	      
+	  | Set_line ((x1, y1),(x2, y2)) -> 
+	    if player.role = Drawer then 
+	      evaluate_set_line x1 y1 x2 y2
+		
+	  | Set_size s ->  
+	    if player.role = Drawer then
+	    let round = get_opt !current_round in round.size <- s;
+	    
 	  | Pass -> evaluate_pass player
 	      
 	  | Cheat name -> evaluate_cheat player name
 
-	  | Talk message -> broadcast (Listen (player.name, message))
-
+	  | Talk message -> 
+	    if player.role = Guesser then
+	      broadcast (Listen (player.name, message))
+		
 	  | Set_courbe  ((x1, y1),(x2, y2), (x3, y3),(x4, y4)) ->
+	    if player.role = Drawer then
 	      let round = get_opt !current_round in
 	      let c = round.color in
-		broadcast (Courbe (
-			     ((x1, y1),(x2, y2), (x3, y3),(x4, y4)), 
-			     (c.r, c.g, c.b), round.size))
-		  
-	  | p -> Printf.printf "Unhandled request %s\n" (string_of_command p)
+	      broadcast (Courbe (
+		((x1, y1),(x2, y2), (x3, y3),(x4, y4)), 
+		(c.r, c.g, c.b), round.size))
+		
+	  | p -> Printf.printf "Unhandled request from %s : %s\n" player.name (string_of_command p)
       end;
       loop ()
   in
@@ -473,8 +483,22 @@ let start_player player_name sock_descr =
     player_scheduling player
        
 let start_spectator sock_descr =
-    server.spectators <- sock_descr::server.spectators
-      
+  server.spectators <- sock_descr::server.spectators;
+  List.iter (fun cmd -> send_command sock_descr cmd ) (List.rev server.commandes);
+  try
+    while true do
+      let cmd = read_and_parse_line sock_descr in
+      match cmd with
+	| Exit _ -> 
+	  Unix.close sock_descr; 
+	  server.spectators <- List.filter ((!=) sock_descr) server.spectators;
+	  Thread.exit ()
+	| c -> Printf.printf "Unhandled request spectator %s\n" (string_of_command c)
+    done
+  with |Closed_connection -> 
+    Unix.close sock_descr; 
+    server.spectators <- List.filter ((!=) sock_descr) server.spectators;
+    Thread.exit ()
       
 let init_new_client sock_descr =
   try 
