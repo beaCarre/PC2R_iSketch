@@ -4,6 +4,7 @@ open Parser
 (** types *)
 
 exception Closed_connection
+exception None_Exception
 
 type role =
   | Undefined
@@ -46,6 +47,8 @@ let server = {players = [];
 	      is_game_started=false;
 	      commandes = []}
 
+let mutex_server = Mutex.create ()
+let mutex_round = Mutex.create ()
 
 (*************   Timer   *************)
 
@@ -151,16 +154,29 @@ let parse_command (str : string) : Protocol.command =
 	Printf.eprintf "[Warning] Unknown error in parsing : %s\n%!" str;
 	Protocol.Malformed
 
-let get_opt opt = match opt with Some r -> r | _ -> assert false 
+let get_opt opt = match opt with Some r -> r | _ -> raise None_Exception
 
 let init_server () =
-  ()
+  Mutex.lock mutex_server;
+  server.players <- [];
+  server.mots_rounds <- [];
+  server.is_game_started <- false;
+  server.commandes <- [];
+  Mutex.unlock mutex_server;
+  Mutex.lock mutex_round;
+  current_round := None;
+  Mutex.unlock mutex_round
 
-let add_player player = 
-  server.players <- player::server.players
+
+let add_player player =
+  Mutex.lock mutex_server;
+  server.players <- player::server.players;
+  Mutex.unlock mutex_server
 
 let remove_player player = 
-  server.players <- List.filter ((!=) player) server.players
+  Mutex.lock mutex_server;
+  server.players <- List.filter ((!=) player) server.players;
+  Mutex.unlock mutex_server
 
 let new_word () =
   let mot = ref "" in
@@ -171,22 +187,33 @@ let new_word () =
       else
 	begin
 	  mot := List.nth !dico i;
+	  Mutex.lock mutex_server;
 	  server.mots_rounds <- !mot::server.mots_rounds;
+	  Mutex.unlock mutex_server;
 	  !mot
 	end
   in loop()
 
 let finalize_name name =
+  Mutex.lock mutex_server;
   if List.exists (function p -> p.name = name ) server.players then
     let rec loop n name =
       if List.exists (function p -> p.name = (Printf.sprintf "%s(%d)" name n) ) server.players
       then
 	loop (n + 1) name
-      else 
-	(Printf.sprintf "%s(%d)" name n)
+      else
+	begin
+	  Mutex.unlock mutex_server;
+	  (Printf.sprintf "%s(%d)" name n)
+	end
     in
     loop 1 name
-  else name
+  else 
+    begin 
+      Mutex.unlock mutex_server;
+      name
+    end
+
 
 let player_input_line fd =
   let s = " " and r = ref "" in
@@ -206,16 +233,20 @@ let read_and_parse_line (fd : Unix.file_descr) : Protocol.command =
   parse_command (player_input_line fd)
 
 let broadcast cmd =
+  Mutex.lock mutex_server;
   List.iter (fun p -> send_command p.chan cmd) server.players;
   List.iter(fun s -> send_command s cmd) server.spectators;
-  server.commandes <- cmd::server.commandes
+  server.commandes <- cmd::server.commandes;
+  Mutex.unlock mutex_server
 
 let treat_exit player =
-  Printf.printf "treat_exit %s\n%!" player.name;
+  Mutex.lock mutex_server;
   Unix.close player.chan;
   remove_player player;
+  broadcast (Exited player.name);
   Thread.exit ();
-  broadcast (Exited player.name)
+  print_endline "fin treat_exit";
+  Mutex.unlock mutex_server
 
 (*************   Gestion partie   *************)
     
@@ -223,62 +254,66 @@ let rec play_round () =
   let round = get_opt !current_round in
   let drawer = get_opt round.drawer in
   let drawer_name = drawer.name in
-    List.iter 
-      (function 
-	 | {chan=fd; role=Drawer; } -> 
-	     send_command fd (New_round (drawer_name, drawer_name, Some round.word_to_find))
-	 | {chan=fd; name=name; } -> send_command fd (New_round (drawer_name, name, None))) 
-      server.players;
-
-    round.timer#restart_count ()
-
-and next_round () =
+  Mutex.lock mutex_round;
+  List.iter 
+    (function 
+      | {chan=fd; role=Drawer; } -> 
+	send_command fd (New_round (drawer_name, drawer_name, Some round.word_to_find))
+      | {chan=fd; name=name; } -> send_command fd (New_round (drawer_name, name, None))) 
+    server.players;
+  round.timer#restart_count ();
+  Mutex.unlock mutex_round
+let next_round () =
   let round = get_opt !current_round in
-    broadcast (End_round (round.winner, round.word_to_find));
-    if round.nb_cheat_report < !nbReport then
-      begin 
-	let liste_score = (List.map (fun {name=n; score_round=s;} -> (n,s)) server.players)in
-	  List.iter (fun (n,s) -> print_endline (n^" : "^(string_of_int s))) liste_score;
-	  broadcast (Score_round liste_score)
-      end
-    else (* cheat ! *)
-      broadcast (Score_round (List.map (function {name=n; } -> (n,0)) server.players));
-	
-    (* Update drawer / guessers *)
-    let rec update_roles l = 
+  broadcast (End_round (round.winner, round.word_to_find));
+  if round.nb_cheat_report < !nbReport then
+    begin 
+      let liste_score = (List.map (fun {name=n; score_round=s;} -> (n,s)) server.players)in
+      List.iter (fun (n,s) -> print_endline (n^" : "^(string_of_int s))) liste_score;
+      broadcast (Score_round liste_score)
+    end
+  else (* cheat ! *)
+    broadcast (Score_round (List.map (function {name=n; } -> (n,0)) server.players));
+  
+  (* Update drawer / guessers *)
+  let rec update_roles l =
       match l with
 	| ({role=Drawer; } as curr_drawer)::t ->
-	    curr_drawer.role <- Guesser; 
-	    curr_drawer.already_draw <- true;
-	    update_roles t
+	  curr_drawer.role <- Guesser; 
+	  curr_drawer.already_draw <- true;
+	  update_roles t
 	| ({already_draw =false;} as next_drawer)::t ->
-	    next_drawer.role <- Drawer;
-	    (get_opt !current_round).drawer <- Some next_drawer;
+	  next_drawer.role <- Drawer;
+	  (get_opt !current_round).drawer <- Some next_drawer;
 	| h::t -> 
-	    update_roles t
-	| [] -> raise Pervasives.Exit (* Fin du jeu *)
-    in
-      try 
-	List.iter (fun c -> c.has_found <- false) server.players;
-	update_roles server.players;
-	round.word_to_find <- new_word();
-	round.winner <- None;
-	round.cpt_found <- 0;
-	round.nb_cheat_report <- 0;
-	round.color.r<-0;round.color.g<-0; round.color.b<-0;
-	round.size<-0;
-	print_endline "Fin du tour"; 
-	Thread.delay 2.;
-	print_endline "Debut du nouveau tour"; 
-	play_round ();
-      with 
-	| Pervasives.Exit ->
-	  List.iter (fun p -> treat_exit p) server.players;
-	  init_server ();
-	  print_endline "End game"
-	    
+	  update_roles t
+	| [] -> raise Pervasives.Exit (* Fin du jeu *);
+  in
+  try 
+    Mutex.lock mutex_server;
+    List.iter (fun c -> c.has_found <- false) server.players;
+    Mutex.unlock mutex_server;
+    Mutex.lock mutex_round;
+    update_roles server.players;
+    round.word_to_find <- new_word();
+    round.winner <- None;
+    round.cpt_found <- 0;
+    round.nb_cheat_report <- 0;
+    round.color.r<-0;round.color.g<-0; round.color.b<-0;
+    round.size<-0;
+    Mutex.unlock mutex_round;
+    print_endline "Fin du tour"; 
+    Thread.delay 2.;
+    print_endline "Debut du nouveau tour"; 
+    play_round ();
+  with 
+    | Pervasives.Exit ->
+      List.iter (fun p -> treat_exit p) server.players;
+      init_server ();
+      print_endline "End game"
+	
 (**********   Predicates   **********)
-
+	
 let can_guess = function
   | { role = Guesser; state = Playing; has_found = false } -> true
   | _ -> false
@@ -288,21 +323,26 @@ let all_has_found () =
 (* Handlers *)
     
 let give_score player round =
-  match round.cpt_found with
-    | 1 -> player.score_round <- 10;
+  Mutex.lock mutex_round;
+  begin
+    match round.cpt_found with
+      | 1 -> player.score_round <- 10;
 	begin
 	  try 
 	    let drawer = get_opt round.drawer in 
-	      drawer.score_round <-10 
-	  with | _ -> () (* drawer a quitt� la partie ou a pass*)
+	    drawer.score_round <-10;
+	    Mutex.unlock mutex_round
+	  with | None_Exception  -> Mutex.unlock mutex_round (* drawer a quitt� la partie ou a pass*)
 	end
-    | n ->  player.score_round <- Pervasives.max (11 - n) 5;
+      | n ->  player.score_round <- Pervasives.max (11 - n) 5;
 	try 
 	  let drawer = get_opt round.drawer in 
-	    drawer.score_round <- drawer.score_round + 1;
-	with | _ -> () (* drawer a quitt� la partie ou a pass*)
-	 
-	  
+	  drawer.score_round <- drawer.score_round + 1;
+	  Mutex.unlock mutex_round
+	with | None_Exception -> Mutex.unlock mutex_round (* drawer a quitt� la partie ou a pass*)
+  end
+
+    
 	  
 let evaluate_word player word = 
   let round = get_opt !current_round in
@@ -432,9 +472,11 @@ let start_playing () =
   (* Peut-etre un mutex à caler dans cette fonction pour les etats *)
 
   (* Tous deviennent joueur *)
+  Mutex.lock mutex_server;
   List.iter (fun p -> p.state <- Playing; p.role <- Guesser) server.players;
   (* Le premier dessine, les autres devinent *)
   (List.hd server.players).role <- Drawer;
+  Mutex.unlock mutex_server;
   
   current_round := Some { timer= new timer delay next_round;
 			  drawer= Some (List.hd server.players);
@@ -478,26 +520,34 @@ let start_player player_name sock_descr =
     broadcast (Connected player_name);
     if List.length server.players = !max then begin
       ignore (Thread.create start_playing ());
+      Mutex.lock mutex_server;
       server.is_game_started <- true;
+      Mutex.unlock mutex_server;
     end;
     player_scheduling player
        
 let start_spectator sock_descr =
+  Mutex.lock mutex_server;
   server.spectators <- sock_descr::server.spectators;
   List.iter (fun cmd -> send_command sock_descr cmd ) (List.rev server.commandes);
+  Mutex.unlock mutex_server;
   try
     while true do
       let cmd = read_and_parse_line sock_descr in
       match cmd with
 	| Exit _ -> 
-	  Unix.close sock_descr; 
+	  Mutex.lock mutex_server;
+	  Unix.close sock_descr;
 	  server.spectators <- List.filter ((!=) sock_descr) server.spectators;
+	  Mutex.unlock mutex_server;
 	  Thread.exit ()
 	| c -> Printf.printf "Unhandled request spectator %s\n%!" (string_of_command c)
     done
   with |Closed_connection -> 
+    Mutex.lock mutex_server;
     Unix.close sock_descr; 
     server.spectators <- List.filter ((!=) sock_descr) server.spectators;
+    Mutex.unlock mutex_server;
     Thread.exit ()
       
 let init_new_client sock_descr =
