@@ -14,14 +14,17 @@
 
 \chapter{Serveur OCaml - Béatrice Carré}
 
-Le serveur a été réalisé en OCaml. Il utilise les modules Thread, Unix, et Str (pour les expressions régulières).
-Les extensions réalisées sont la discussion instantanée, les courbes de Bézier et les spectateurs. Nous détaillerons par la suite les choix d'implémentation qui ont été faits.
+Le serveur a été réalisé en OCaml. Il utilise les modules Thread, Unix, et Str (pour les expressions régulières du protocol).
+Nous détaillerons par la suite les choix d'implémentation qui ont été faits.
 
 \section{Etablissement du serveur}
 
+L'établissement du serveur a été fait en s'inspirant du chapitre 20 de \emph{Développement d'Applications avec Objective Caml}
+
+
 \section{Traitement d'une commande - camllex et camlyacc}
 
-Afin de traiter les commandes reçues, on les transforme en une liste dont chaque élément est délimité par ``/'' (non précédé par un ``$\backslash$'' afin de respecter le protocle), il a donc fallu redéfinir une fonction quasi-équivalente à Str.split mais qui respectait le protocole. Ainsi, commande et arguments sont aisément identifiés. Le traitement des commandes se reposera par la suite sur la liste ainsi obtenue.
+Afin de traiter les commandes reçues, afin de respecter le protocle), il était intéressant d'utiliser, et en profiter pour découvrir, les . Ainsi, commande et arguments sont aisément identifiés. Le traitement des commandes se reposera par la suite sur la liste ainsi obtenue.
 
 \section{Connexion}
 

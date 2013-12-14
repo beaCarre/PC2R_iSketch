@@ -153,6 +153,9 @@ let parse_command (str : string) : Protocol.command =
 
 let get_opt opt = match opt with Some r -> r | _ -> assert false 
 
+let init_server () =
+  ()
+
 let add_player player = 
   server.players <- player::server.players
 
@@ -202,8 +205,8 @@ let read_and_parse_line (fd : Unix.file_descr) : Protocol.command =
 
 let broadcast cmd =
   List.iter (fun p -> send_command p.chan cmd) server.players;
-  List.iter(fun s -> send_command s.chan cmd) server.spectators;
-  server.commandes <- cmd::serveur.commandes
+  List.iter(fun c -> send_command c cmd) server.spectators;
+  server.commandes <- cmd::server.commandes
 
 
 (*************   Gestion partie   *************)
@@ -470,7 +473,7 @@ let start_player player_name sock_descr =
     player_scheduling player
        
 let start_spectator sock_descr =
-    server.spectator <- sock_descr::server.spectator;
+    server.spectators <- sock_descr::server.spectators
       
       
 let init_new_client sock_descr =
@@ -478,8 +481,11 @@ let init_new_client sock_descr =
     match await_connect sock_descr with
       | (name, 1) -> start_player name sock_descr
       | (_ , 2) -> start_spectator sock_descr 
+      | _ -> ()
   with 
-    | Closed_connection -> Printf.eprintf "[Warning] Aborted connection\n%!"; Unix.close sock_descr
+    | Closed_connection -> 
+      Printf.eprintf "[Warning] Aborted connection\n%!"; 
+      Unix.close sock_descr
 	
 let start_server port =
   let sock = ThreadUnix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
