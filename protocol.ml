@@ -4,6 +4,7 @@ open Str
 type command = 
   | Connect of string
   | Connected of string
+  | Spectator
   | Welcome of string
   | Exit of string
   | Exited of string
@@ -44,6 +45,8 @@ let string_of_command = function
   | Connect n -> sprintf "CONNECT/%s/\n" (secure n)
 
   | Connected n -> sprintf "CONNECTED/%s/\n" (secure n)
+    
+  | Spectator -> "SPECTATOR/\n"
 
   | Welcome n -> sprintf "WELCOME/%s/\n" (secure n)
 

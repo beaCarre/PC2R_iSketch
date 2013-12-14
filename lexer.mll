@@ -30,6 +30,7 @@ let talk = "TALK"
 let listen = "LISTEN"
 let set_courbe = "SET_COURBE"
 let courbe = "COURBE"
+let spectator = "SPECTATOR"
 
 let nl = ['\n' '\r']+
 
@@ -84,6 +85,8 @@ rule token = parse
       {SET_COURBE}
   | courbe
       {COURBE}
+  | spectator
+      {SPECTATOR}
 
   | slash
       {SLASH}

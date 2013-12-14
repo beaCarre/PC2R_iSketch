@@ -1,33 +1,30 @@
+open Protocol
+open Parser
 
-(* gerer args avec module Arg *)
-(* gerer client a la place des sd !!!! *)
+(** types *)
 
-(********************** types et var **********************)
+exception Closed_connection
 
-(*gestion client*)
 type role =
-  | DRAWER
-  | GUESSER 
+  | Undefined
+  | Drawer
+  | Guesser 
       
-type etat =
-  | WAITING
-  | PLAYING
-  | EXITED
+type player_state =
+  | Waiting
+  | Playing
 
-type client = {
+type player = {
   chan : Unix.file_descr;
-  name : string ;
-  mutable role : role ;
-  mutable etat : etat;
+  thread : Thread.t;
+  name : string;
+  mutable role : role;
+  mutable already_draw : bool;
+  mutable has_found : bool;
+  mutable state : player_state;
   mutable score_round : int;
   mutable score : int;
 }
-
-let clients = ref []
-
-let clients_mutex = Mutex.create()
-
-(*gestion graphique*)
 
 type color = {
   mutable r : int;
@@ -35,61 +32,97 @@ type color = {
   mutable b : int;
 } 
 
-type line = {
-  x1 : int;
-  y1 : int;
-  x2 : int;
-  y2 : int;
-  color : color;
-  size : int;
+type server = {
+  mutable players : player list;
+  mutable spectators : Unix.file_descr list;
+  mutable mots_rounds : string list;
+  mutable is_game_started : bool;
+  mutable commandes : Protocol.command list
 }
-let lines = ref []
-let color = {r=0; g=0; b=0}
-let size = ref 0
 
-(*var round*)
-let mots_round = ref []
-let mot = ref ""
-let cpt_found = ref 0
+let server = {players = [];
+	      spectators = [];
+	      mots_rounds=[]; 
+	      is_game_started=false;
+	      commandes = []}
 
-(* timers *)
-(* let timerWF = ref None 
-let timerR = ref None *)
 
-(*serv_addr*)
-let serv_addr = ref (Unix.gethostbyname(Unix.gethostname())).Unix.h_addr_list.(0)
+(*************   Timer   *************)
 
-(********************** gestion options **********************)
-  
-let charger_dico filename =
- 
-  let chan = open_in filename in
-  begin
-    try 
-      while true do
-	let mot = input_line chan in
-	dico := mot::!dico
-      done  
-    with  
-      | End_of_file -> close_in chan
-  end;
-    
-let get_option option defaut =
-  let res = ref defaut in
-  for i=1 to (Array.length Sys.argv)-1 do
-    if  (Sys.argv.(i) = option) && (i < (Array.length Sys.argv))
-    then
-      res := Sys.argv.(i+1)
-  done;
-  !res
+class timer init_delay callback = 
+object(self)
+  val mutable time = init_delay 
+  val mutable running = false
+  val mutex_delay = Mutex.create ()
+  val mutex_running = Mutex.create ()
 
-let timeout = ref 10
+  method start_count () = 
+    running <- true;
+    ignore (Thread.create 
+	      (fun () -> 
+		 while time > 0 && running
+		 do
+		   Thread.delay 1.0;
+		   Mutex.lock mutex_delay;
+		   time <- time - 1;
+		   Mutex.unlock mutex_delay
+		 done;
+		 if running then callback ())
+	      ())
+  method restart_count () =
+    self#stop_timer ();
+    self#set_delay init_delay;
+    self#start_count ()
+  method get_current_delay = time
+  method set_delay new_delay =
+    Mutex.lock mutex_delay;
+    time <- new_delay;
+    Mutex.unlock mutex_delay
+  method stop_timer () =
+    Mutex.lock mutex_running;
+    running <- false;
+    Mutex.unlock mutex_running
+end
+
+(*************   types part2   *************)
+
+type round = {
+  timer : timer;
+  mutable drawer : player option;
+  mutable winner : string option;
+  mutable word_to_find : string;
+  mutable cpt_found : int;
+  mutable nb_cheat_report : int;
+  mutable color : color;
+  mutable size : int;
+}
+
+let current_round = ref None 
+
+(*************   Args   *************)
+
+let timeout = ref 20
 let max = ref 2
 let fdico = ref "dico.txt"
 let port = ref 2013
 let nbReport = ref 3
 
- 
+let dico = ref []
+let delay = 60
+
+(*************   Utils_args   *************)
+
+let charger_dico filename =
+  let chan = open_in filename in
+    begin
+      try 
+	while true do
+	  let mot = input_line chan in
+	    dico := mot::!dico
+	done  
+      with | End_of_file -> close_in chan
+    end
+      
 let parse_args () =
   let speclist = [("-timeout", Arg.Set_int timeout, "set timeout");
 		  ("-max", Arg.Set_int max, "set max");
@@ -97,339 +130,378 @@ let parse_args () =
 		  ("-port", Arg.Set_int port, "set port");
 		  ("-n", Arg.Set_int nbReport, "set nbReport")]    
   in let usage_msg = "Options available:"
-     in Arg.parse speclist print_endline usage_msg
-     
-       
-let timeRound = 20
-(*
-  let timeout = int_of_string (get_option "-timeout" "10")
-  let max = int_of_string (get_option "-max" "2")
-  let fdico = get_option "-dico" "dico.txt"
-  let port = int_of_string (get_option "-port" "2013")
-  let nbReport = int_of_string (get_option "-n" "3")
-*)
-let dico = charger_dico fdico
+  in Arg.parse speclist print_endline usage_msg;
+    charger_dico !fdico
 
 
+(*************   Utils   *************)
 
-(********************** tools **********************)
-
-let client_from_fd sd =
-  List.find (fun c -> c.chan = sd ) !clients
-
-let my_input_line fd =
-  let s = " " and r = ref ""
-  in while (ThreadUnix.read fd s 0 1 > 0) && s.[0] <> '\n' do r := !r ^s done ;
-  Printf.printf "input_line : %s\n%!" !r;
-  !r
-    
-let my_output_line fd str =
-  ignore (ThreadUnix.write fd str 0 (String.length str))
-(* Printf.printf " command send : %s\n%!" str*)
-
-let stop_thread_client sd =
-  print_endline "stop ! \n%!";
-  Mutex.lock clients_mutex;
-  clients := List.filter (fun c -> c.chan <> sd) !clients;
-  Mutex.unlock clients_mutex;
-  Unix.close sd;
-  List.iter 
-    (fun c -> my_output_line c.chan (Printf.sprintf "EXITED/%s/\n%!" (client_from_fd sd).name) )
-    !clients;
-  Thread.exit ()
-
-let rec init_mot () =
-  let i = Random.int (List.length dico) in
-  if (List.exists (fun m -> m = (List.nth dico i)) !mots_round) then
-    init_mot ()
-  else
-    begin
-      mot := List.nth dico i;
-      mots_round := !mot::!mots_round
-    end
-
-(* broadcast :an Protocol.command -> unit *)
-let broadcast cmd =
-  List.iter (fun c -> my_output_line c.chan (Protocol.string_of_command cmd)) !clients
-
-(* parse_command : string -> Protocol.command *)
-let parse_command str =
+let parse_command (str : string) : Protocol.command =
   try
     let lexbuf = Lexing.from_string str in
-    Parser.start Lexer.token lexbuf
+      Parser.start Lexer.token lexbuf
   with
     | Parsing.Parse_error -> 
-      Printf.eprintf "[Warning] Error at parsing : %s\n%!" str;
-      Protocol.Malformed
+	Printf.eprintf "[Warning] Error at parsing : %s\n%!" str;
+	Protocol.Malformed
     | Failure "int_of_string" -> 
-      Printf.eprintf "[Warning] Error given a float expect an int : %s\n%!" str;
-      Protocol.Malformed
+	Printf.eprintf "[Warning] Error given a float expect an int : %s\n%!" str;
+	Protocol.Malformed
     | _ -> 
-      Printf.eprintf "[Warning] Unknown error in parsing : %s\n%!" str;
-      Protocol.Malformed
+	Printf.eprintf "[Warning] Unknown error in parsing : %s\n%!" str;
+	Protocol.Malformed
 
-let end_round () =
-  print_endline "end_round !";
-  let liste_scores = ref [] in
-  List.iter (fun c -> 
-    liste_scores := (c.name,c.score_round)::!liste_scores;
-    my_output_line c.chan (Protocol.string_of_command (Protocol.Score_round( !liste_scores ))) ;
-    (* envoyer end round avant avec nom gagnant *)
-    c.etat <- WAITING ;
-    c.score <- c.score+(c.score_round);
-    c.score_round <- 0
-  )
-    !clients
-(* TOfinish *)
-	
-(*timers*)
+let get_opt opt = match opt with Some r -> r | _ -> assert false 
 
-class timer delay callback = 
-object(self)
-  val mutable time = delay 
-  val mutex = Mutex.create ()
-  val mutable thread = None
+let add_player player = 
+  server.players <- player::server.players
 
-  method start_count () = 
-    let th = Thread.create 
-      (fun () -> 
-	 while time > 0 do
-	   Thread.delay 1.0;
-	   Mutex.lock mutex;
-	   time <- time - 1;
-	   Mutex.unlock mutex
-	 done;
-	 callback ())
-      () in
-      thread <- Some th
-  method get_delay = time
-  method get_thread = thread
-  method set_delay new_delay =
-    Mutex.lock mutex;
-    time <- new_delay;
-    Mutex.unlock mutex
+let remove_player player = 
+  server.players <- List.filter ((!=) player) server.players
 
-  method stop_timer () = 
-    match thread with
-      | Some th -> Thread.kill th; thread <- None
-      | None -> print_endline "timer already stopped"
-end
+let new_word () =
+  let mot = ref "" in
+  let rec loop () =
+    let i = Random.int (List.length !dico) in
+      if (List.exists (fun m -> m = (List.nth !dico i)) server.mots_rounds) then
+	loop ()
+      else
+	begin
+	  mot := List.nth !dico i;
+	  server.mots_rounds <- !mot::server.mots_rounds;
+	  !mot
+	end
+  in loop()
 
+let finalize_name name =
+  let rec loop n name =
+    if List.exists(function p -> p.name = name) server.players
+    then
+      loop (n + 1) (Printf.sprintf "%s(%d)" name n)
+    else 
+      name
+  in
+    loop 1 name
+      
+let player_input_line fd =
+  let s = " " and r = ref "" in
+    while (ThreadUnix.read fd s 0 1 > 0) && s.[0] <> '\n' do r := !r ^s done ;
+    if String.length !r = 0 then 
+      raise Closed_connection;
+    !r
+      
+let player_output_line fd str =
+  ignore (ThreadUnix.write fd str 0 (String.length str));
+  Printf.printf " command send : %s\n%!" str
 
-type state = 
-{
-  mutable clients : client list;
-  mutable lines : line list;
-  mutable cmd : Protocol.command list;
-  timer : timer;
-}
+let send_command (fd : Unix.file_descr) (cmd : Protocol.command) : unit =
+  player_output_line fd (string_of_command cmd)
 
-let server_state = { clients = [];
-		     lines = []; 
-		     cmd = [];
-		     timer = new timer timeRound end_round
-		   }
+let read_and_parse_line (fd : Unix.file_descr) : Protocol.command =
+  parse_command (player_input_line fd)
+
+let broadcast cmd =
+  List.iter (fun p -> send_command p.chan cmd) server.players;
+  List.iter(fun s -> send_command s.chan cmd) server.spectators;
+  server.commandes <- cmd::serveur.commandes
 
 
-	     (********************** gestion commandes **********************)
-
-let drawer_exit client =
-  end_round ();
-  stop_thread_client client.chan
-(*TODO traitement sortie dessinateur*)
-
-let set_line  x y u v =
-  lines := {x1= x; y1= y; x2= u; y2= v; color=color; size=(!size)}::!lines;
-  List.iter (fun c -> my_output_line c.chan
-    (Printf.sprintf "LINE/%d/%d/%d/%d/%d/%d/%d/%d/\n%!" x y u v color.r  color.g  color.b !size )) 
-    !clients;
-  print_endline (Printf.sprintf "set_line %d/%d/%d/%d\n%!" x y u v)
+(*************   Gestion partie   *************)
     
-let guess client proposition (*nth_found*) =
-  print_endline (Printf.sprintf "%s a proposé le mot %s\n%!" client.name proposition);
-  (*TODO*)
-  let nb_guessers = List.length !clients -1 in
-  if proposition = !mot then
-    begin
-      Mutex.lock clients_mutex;
-      my_output_line client.chan (Protocol.string_of_command (Protocol.Guess proposition));
-      incr cpt_found;
+let rec play_round () =
+  let round = get_opt !current_round in
+  let drawer = get_opt round.drawer in
+  let drawer_name = drawer.name in
+    List.iter 
+      (function 
+	 | {chan=fd; role=Drawer; } -> 
+	     send_command fd (New_round (drawer_name, drawer_name, Some round.word_to_find))
+	 | {chan=fd; name=name; } -> send_command fd (New_round (drawer_name, name, None))) 
+      server.players;
+
+    round.timer#restart_count ()
+
+and next_round () =
+  let round = get_opt !current_round in
+    broadcast (End_round (round.winner, round.word_to_find));
+    if round.nb_cheat_report < !nbReport then
+      begin 
+	let liste_score = (List.map (fun {name=n; score_round=s;} -> (n,s)) server.players)in
+	  List.iter (fun (n,s) -> print_endline (n^" : "^(string_of_int s))) liste_score;
+	  broadcast (Score_round liste_score)
+      end
+    else (* cheat ! *)
+      broadcast (Score_round (List.map (function {name=n; } -> (n,0)) server.players));
+	
+    (* Update drawer / guessers *)
+    let rec update_roles l = 
+      match l with
+	| ({role=Drawer; } as curr_drawer)::t ->
+	    curr_drawer.role <- Guesser; 
+	    curr_drawer.already_draw <- true;
+	    update_roles t
+	| ({already_draw =false;} as next_drawer)::t ->
+	    next_drawer.role <- Drawer;
+	    (get_opt !current_round).drawer <- Some next_drawer;
+	| h::t -> 
+	    update_roles t
+	| [] -> raise Pervasives.Exit (* Fin du jeu *)
+    in
+      try 
+	List.iter (fun c -> c.has_found <- false) server.players;
+	update_roles server.players;
+	round.word_to_find <- new_word();
+	round.winner <- None;
+	round.cpt_found <- 0;
+	round.nb_cheat_report <- 0;
+	round.color.r<-0;round.color.g<-0; round.color.b<-0;
+	round.size<-0;
+	print_endline "Fin du tour"; (* debug *)
+	Thread.delay 2.;
+	print_endline "Debut du nouveau tour"; (* debug *)
+	play_round ();
+      with 
+	| Pervasives.Exit -> 
+	  init_server ();
+	  print_endline "End game"
+	    
+(**********   Predicates   **********)
+
+let can_guess = function
+  | { role = Guesser; state = Playing; } -> true
+  | _ -> false
+let all_has_found () = 
+  List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.players
+
+(* Handlers *)
+
+let give_score player round =
+  match round.cpt_found with
+    | 1 -> player.score_round <- 10;
+	begin
+	  try 
+	    let drawer = get_opt round.drawer in 
+	      drawer.score_round <-10 
+	  with | _ -> () (* drawer a quittï¿½ la partie ou a pass*)
+	end
+    | n ->  player.score_round <- Pervasives.max (11 - n) 5;
+	try 
+	  let drawer = get_opt round.drawer in 
+	    drawer.score_round <- drawer.score_round + 1;
+	with | _ -> () (* drawer a quittï¿½ la partie ou a pass*)
+	 
+	  
+	  
+let evaluate_word player word = 
+  let round = get_opt !current_round in
+    if round.word_to_find = word then 
+      begin (* mutex round ? *)
+	round.cpt_found <- round.cpt_found + 1;
+	give_score player round;
+	match round.winner with
+	  | Some _ ->
+	      broadcast (Word_found (player.name));
+	      player.has_found <- true;
+	      if all_has_found () then
+		round.timer#set_delay 1 
+	  | None ->
+	      round.winner <- Some player.name;
+	      player.has_found <- true;
+	      broadcast (Word_found (player.name));
+	      if all_has_found ()
+	      then
+		round.timer#set_delay 1 
+	      else
+		begin
+		  round.timer#set_delay !timeout;
+		  broadcast (Word_found_timeout !timeout)
+		end
+      end 
+    else 
+      broadcast (Guessed (word, player.name))
+	
+let treat_exit player =
+  Printf.printf "treat_exit %s\n%!" player.name;
+  Unix.close player.chan;
+  remove_player player;
+  Thread.exit ();
+  broadcast (Exited player.name)
+    
+let evaluate_pass player =
+  (* mutex round ? *)
+  let round = get_opt !current_round in
+    if player.role = Drawer && round.winner = None  then
       begin
-	match !cpt_found with
-	  | 1 -> (*let timer = server_state.timer in 
-	      if timer#get_delay > timeout then*)
-	      
-	      server_state.timer#set_delay timeout;
-
-	      broadcast (Protocol.Word_found_timeout timeout );
-	      client.score_round <- 10
-	  | n when n = nb_guessers -> 
-	    broadcast (Protocol.Word_found client.name);
-	    client.score_round <- min (10 - nb_guessers-1) 5;
-	    end_round ()
-	  | n -> broadcast (Protocol.Word_found client.name);
-	    client.score_round <- min (10-n-1) 5;
-      end;
-      Mutex.unlock clients_mutex;
-    end
-      
-  (*incr nth_found
-    match ordre_found with
-    1 -> timerWF := Some (Thread.create timer_word_found () )
-    | (List.length !clients - 1) -> end_round ()(*nth_found*)*)
-  
-
-(********************** gestion jeu **********************)
-
-
-let start_round namedrawer =
-  init_mot ();
-  List.iter (fun c -> c.role <- ( if c.name=namedrawer then DRAWER else GUESSER)) !clients;
-  List.iter 
-    (fun c -> 
-      my_output_line c.chan ( 
-	if c.name = namedrawer
-	then (Printf.sprintf "NEW_ROUND/%s/%s/\n" namedrawer !mot)
-	else (Printf.sprintf "NEW_ROUND/%s/\n" namedrawer ))
-    )
-    !clients;
-  server_state.timer#set_delay 60;
-  server_state.timer#start_count ();
-  match server_state.timer#get_thread with Some t -> Thread.join t | _ -> ()
-    
-    
-    
-let start_game () =
-  List.iter (fun c -> c.etat <- PLAYING) !clients;
-  List.iter (fun c -> start_round c.name) !clients
-
-let th_joueur client =
-  while true do
-    let commande_recue = my_input_line client.chan in
-    let commande = parse_command commande_recue in
-    match client.role, commande with
-      | GUESSER, Protocol.Exit(user)
-	  -> stop_thread_client client.chan
-      | DRAWER, Protocol.Exit(user)
-	-> drawer_exit client
-      | GUESSER, Protocol.Guess(word)
-	-> guess client word 
-      | DRAWER, Protocol.Set_color(r,g,b)
-	-> color.r <- r; 
-	  color.g <- g; 
-	  color.b <- b
-      | DRAWER, Protocol.Set_line((x1,y1),(x2,y2))
-	-> set_line x1 y1 x2 y2
-      | DRAWER, Protocol.Set_size(s)
-	-> size := s
-      | r,cmd ->
-	print_endline (if r=GUESSER then "guesser :" else "drawer :");
-	print_endline ("commande recue non traitee:"^(Protocol.string_of_command cmd))
-  done
-    
-let th_spectator spectator =
-  ()
-
-let treat_connexion user sd =
-  Mutex.lock clients_mutex;
-  let client = {name=user;chan=sd;role=GUESSER;etat=WAITING;score_round=0;score=0} in
-  clients:=client::!clients;
-  broadcast (Protocol.Connected user);
-  my_output_line sd (Printf.sprintf "WELCOME/%s/\n%!" user);
-  if List.length (List.filter (fun c -> c.etat = WAITING) !clients) = max
-  then
-    start_game ()(* clients ? *)
-  else print_endline "attente des autres";
-  Mutex.unlock clients_mutex;
-  client
-
-let rec rename name i=
-  (*Mutex.lock clients_mutex;*)
-  if List.exists ( fun c -> c.name = (name^"("^string_of_int (i)^")" )) !clients then
-    rename name (i+1)
-  else 
-    (name^"("^string_of_int (i)^")" )
-
-let connexion_client sd sa =
-  let recue = my_input_line sd in
-  let commande = parse_command recue in
-  print_endline "blop";
-  match commande with
-    | Protocol.Connect(name)
-      -> let new_name = rename name 0 in
-	 Some (treat_connexion new_name sd)
-      (*|"LOGIN"::login::password::_
-	-> if check_login login password = 1
-	then
-	begin 
-	treat_connexion login sd;
-	1
-	end
-	else  (* erreur log *) 0
+	round.timer#set_delay 1;
+	round.drawer <- None;
+      end
 	
-	|"REGISTER"::login::password::_ ->
-	if check_register login password = 1
-	then 
-	begin 
-	treat_connexion login sd;
-	1
-	end
-	else  (* erreur log *) 0
-	|"SPECTATOR"::_ -> 
-	let spect = { TODO !
-      *)
-    | _ -> None
-      
-let connexion sd sa =
-  match connexion_client sd sa with
-      None -> print_endline "erreur connect : stop th_client"; stop_thread_client sd
-    | Some(client) -> print_endline "th_joueur :"; th_joueur client
-    | Some(_) -> (* spectator *) ()
-    | _ -> stop_thread_client sd
-   
-let serv_socket_run port =
-  let sock = ThreadUnix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-  let mon_adresse =
-    (* (Unix.gethostbyname(Unix.gethostname()).Unix.h_addr_list.(0)) in *)	
-    Unix.inet_addr_of_string "127.0.0.1" in
-  Unix.bind sock (Unix.ADDR_INET(mon_adresse,port));
-  Unix.listen sock 3;
-  while true do
-    let sd, sa = ThreadUnix.accept sock in
+let evaluate_exit player name =
+  if name = player.name then
     begin
-      Unix.setsockopt sd Unix.SO_REUSEADDR true;
-      ignore (Thread.create 
-		(fun x -> (connexion sd sa) ; print_endline "stop_th"; (stop_thread_client sd) )
-		() 
-      );
-      print_endline "th client lancé"
+      evaluate_pass player;
+      treat_exit player
     end
-  done
+	
+let evaluate_cheat player name =
+  if name = player.name then
+    begin 
+      let round = get_opt !current_round in
+	match round.drawer with
+	  | None -> () (* cheat : drawer deja parti*)
+	  | Some drawer ->
+	      round.nb_cheat_report <- round.nb_cheat_report +1;
+	      if round.nb_cheat_report >= !nbReport then
+		begin
+		  round.timer#set_delay 1;
+		  round.drawer <- None;
+		  treat_exit drawer;
+		end
+    end
 
-let () =
-  Unix.handle_unix_error serv_socket_run port
-
-
-(*
-
-Ton programme principal :
-  Pour toujours faire
-     Accepter client
-  Fin pour
-
-Accepter client :
-  let th = Nouveau thread qui écoute tout l'temps le client
-  etat_global reçoit un nouveau client qui contient nom + thread + fd 
-
-
-
-
-
-
-
+let evaluate_set_line x1 y1 x2 y2 =
+  let round = get_opt !current_round in
+  let color = round.color in
+    broadcast ( Line (((x1, y1),(x2, y2)), (color.r, color.g, color.b), round.size))
 
 
+let player_scheduling player =
+  let rec loop () =
+    let cmd = read_and_parse_line player.chan in
+      begin
+	match cmd with
+	  | Connect name ->
+	      Printf.eprintf 
+		"Player : %s asking for a connect. => Retarded client\n%!"
+		player.name
+
+	  | Exit name -> evaluate_exit player name
+
+	  | Guess word -> 
+	      if can_guess player then evaluate_word player word
+	      else print_endline "cannot guess"
+	  | Set_color (r, g, b) -> 
+	      let round = get_opt !current_round in
+		round.color.r <- r;
+		round.color.g <- g;
+		round.color.b <- b
+	      	      
+	  | Set_line ((x1, y1),(x2, y2)) -> evaluate_set_line x1 y1 x2 y2
+	      
+	  | Set_size s ->  let round = get_opt !current_round in round.size <- s;
+	      
+	  | Pass -> evaluate_pass player
+	      
+	  | Cheat name -> evaluate_cheat player name
+
+	  | Talk message -> broadcast (Listen (player.name, message))
+
+	  | Set_courbe  ((x1, y1),(x2, y2), (x3, y3),(x4, y4)) ->
+	      let round = get_opt !current_round in
+	      let c = round.color in
+		broadcast (Courbe (
+			     ((x1, y1),(x2, y2), (x3, y3),(x4, y4)), 
+			     (c.r, c.g, c.b), round.size))
+		  
+	  | p -> Printf.printf "Unhandled request %s\n" (string_of_command p)
+      end;
+      loop ()
+  in
+    try 
+      loop ()
+    with 
+	(* todo handle proper exceptions. E.g : connection lost *)
+      | Closed_connection -> 
+	  Printf.eprintf "[Warning] Connection lost with player : %s - removing him\n%!" player.name;
+	  evaluate_exit player player.name
+
+let start_playing () =
+  (* Peut-etre un mutex Ã  caler dans cette fonction pour les etats *)
+
+  (* Tous deviennent joueur *)
+  List.iter (fun p -> p.state <- Playing; p.role <- Guesser) server.players;
+  (* Le premier dessine, les autres devinent *)
+  (List.hd server.players).role <- Drawer;
+  
+  current_round := Some { timer= new timer delay next_round;
+			  drawer= Some (List.hd server.players);
+			  winner = None;			  
+			  word_to_find= new_word ();
+			  cpt_found = 0;
+			  nb_cheat_report = 0;
+			  color = {r=0;g=0;b=0};
+			  size = 0};
+  play_round ()
+    
+(** Connections *)
+
+let await_connect sock_descr = 
+  let rec loop () =
+    let cmd = read_and_parse_line sock_descr in
+    match cmd with
+      | Connect name when not server.is_game_started -> 
+	let name = finalize_name name in
+	send_command sock_descr (Welcome name);
+	name , 1
+      | Spectator -> 
+	("", 2)
+      | _ -> loop ()
+  in
+  loop ()
+    
+let start_player player_name sock_descr =
+  let player = 
+    { chan = sock_descr
+    ; thread = Thread.self ()
+    ; name = player_name
+    ; role = Undefined
+    ; already_draw = false
+    ; has_found = false
+    ; state = Waiting
+    ; score_round = 0
+    ; score = 0
+    } in
+    add_player player;
+    broadcast (Connected player_name);
+    if List.length server.players = !max then begin
+      ignore (Thread.create start_playing ());
+      server.is_game_started <- true;
+    end;
+    player_scheduling player
+       
+let start_spectator sock_descr =
+    server.spectator <- sock_descr::server.spectator;
+      
+      
+let init_new_client sock_descr =
+  try 
+    match await_connect sock_descr with
+      | (name, 1) -> start_player name sock_descr
+      | (_ , 2) -> start_spectator sock_descr 
+  with 
+    | Closed_connection -> Printf.eprintf "[Warning] Aborted connection\n%!"; Unix.close sock_descr
+	
+let start_server port =
+  let sock = ThreadUnix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  let addr = Unix.inet_addr_any in
+    (*Unix.inet_addr_of_string "127.0.0.1" in*)
+    (*(Unix.gethostbyname(Unix.gethostname()).Unix.h_addr_list.(0)) in *)
+    Unix.bind sock (Unix.ADDR_INET(addr,port));
+    Unix.listen sock 3;
+    while true do
+      let sd, _ = ThreadUnix.accept sock in
+	begin
+	  Unix.setsockopt sd Unix.SO_REUSEADDR true;
+	  ignore (Thread.create init_new_client sd);
+	  print_endline "th client lance"
+	end
+    done
 
 
-
-*)
+let () = 
+  print_endline 
+    "################################################################
+\tSuper server two thousand : online
+################################################################";
+  parse_args ();
+  start_server 2013
