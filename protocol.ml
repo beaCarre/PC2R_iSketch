@@ -43,13 +43,13 @@ let secure str =
 
 let string_of_command = function
   | Connect n -> sprintf "CONNECT/%s/\n" (secure n)
-
+    
   | Connected n -> sprintf "CONNECTED/%s/\n" (secure n)
     
   | Spectator -> "SPECTATOR/\n"
-
+    
   | Welcome n -> sprintf "WELCOME/%s/\n" (secure n)
-
+    
   | Exit n -> sprintf "EXIT/%s/\n" (secure n)
 
   | Exited n -> sprintf "EXITED/%s/\n" (secure n)
