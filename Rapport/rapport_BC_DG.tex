@@ -10,54 +10,89 @@
 \usepackage{tikz}
 
 
+\usepackage{listings}
+\usepackage{color}
+\definecolor{lightgray}{rgb}{.9,.9,.9}
+\definecolor{darkgray}{rgb}{.4,.4,.4}
+\definecolor{purple}{rgb}{0.65, 0.12, 0.82}
+
+\lstnewenvironment{OCaml}
+                  {\lstset{
+                      language=[Objective]Caml,
+                      breaklines=true,
+                      commentstyle=\color{purple},
+                      stringstyle=\color{red},
+                      identifierstyle=\ttfamily,
+                      keywordstyle=\color{blue},
+                      basicstyle=\footnotesize
+                    }
+                  }
+                  {}
+\lstnewenvironment{C}
+                  {\lstset{
+                      language=C,
+                      breaklines=true,
+                      commentstyle=\color{purple},
+                      stringstyle=\color{red},
+                      identifierstyle=\ttfamily,
+                      keywordstyle=\color{blue},
+                      basicstyle=\footnotesize
+                    }
+                  }
+                  {}
+
 \begin{document}
 
 \chapter{Serveur OCaml - Béatrice Carré}
 
 Le serveur a été réalisé en OCaml. Il utilise les modules Thread, Mutex
-Unix, Arg (pour parser les options du serveur) et Str (pour les expressions régulières du protocol).
+Unix, Arg (pour parser les options du serveur) et Str (pour les
+expressions régulières du module Protocol), ainsi que ocamllex et
+ocamlyacc pour la gestion des commandes.
+
 Nous détaillerons par la suite les choix d'implémentation qui ont été faits.
 
 \section{Etablissement du serveur}
 
 L'établissement du serveur a été fait en s'inspirant du chapitre 20 de
 \emph{Développement d'Applications avec Objective Caml}.
-Comme spécifié dans le sujet du projet, la connexion s'appuie sur un protocole TCP sur le port \emph{port}.
+Comme spécifié dans le sujet du projet, la connexion s'appuie sur un
+protocole TCP sur le port 2013 par défaut.
 Le serveur a des paramètres par défaut modifiables par option au
 moment du lancement :
 \begin{itemize}
-\item le \emph{timeout} qui vaut 30 secondes par défaut
-\item le nombre de joueur \emph{max} pour le lancement de la partie,
-  qui vaut 4 par défaut
-\item le \emph{port} utilisé valant 2013 par défaut
-\item le nom du fichier \emph{dico} valant dico.txt par défaut
-\item le nombre \emph{n} de joueur devant dénoncer un dessinateur pour
-  qu'il soit considéré comme tricheur, qui vaut 2 par défaut
+\item le \emph{timeout}, 30 secondes par défaut
+\item le nombre de joueurs \emph{max} pour le lancement de la partie, 4 par défaut
+\item le \emph{port} utilisé, 2013 par défaut
+\item le nom du fichier \emph{dico}, ''dico.txt'' par défaut
+\item le nombre \emph{n} de joueur(s) devant dénoncer un dessinateur pour
+  qu'il soit considéré comme tricheur, 2 par défaut
 \end{itemize}
-Avant l'établissement du serveur, une fonction parse les arguments
+Avant l'établissement du serveur, les arguments sont parsés
 grâce au module \emph{Arg}.
 
 \section{Traitement d'une commande - camllex et camlyacc}
 
-Afin de traiter les commandes reçues, en respectant le protocle, il
-était intéressant d'utiliser, les générateurs d'analyseur syntaxique
-ocamllex et de parser ocamlyacc.
+Afin de traiter les commandes reçues, en respectant le protocole, il
+était intéressant d'utiliser les générateurs d'analyseur syntaxique
+ocamllex et de parser ocamlyacc. Le site \emph{http://caml.inria.fr/pub/docs/manual-ocaml-4.00/manual026.html}
 
-Après avoir créé des constructeurs de commandes dans le fichier \emph{protocol.ml}, il a
+Après avoir créé des constructeurs de commande dans le fichier \emph{protocol.ml}, il a
 fallu définir la grammaire du parser (dans \emph{parser.mly}) et les
-expressions régulières manipulées (dans \emph{lexer.mll}). La grammaire nous indique les 
-actions à faire en utilisant le protocole, à partir d'expressions définies.
+expressions régulières manipulées (dans \emph{lexer.mll}). La
+grammaire traduit les expressions définies en commande en utilisant
+les constructeurs du module Protocol.
 
 Ainsi, commande et arguments sont aisément identifiés et manipulés. 
 Une fois cela fait, pour traiter une commande reçue, il suffit
 de combiner le lexer et le parser, pour
 obtenir le type \emph{command} défini dans le protocole. Pour
 envoyer une commande, il suffira d'utiliser les constructeurs définis
-dans le protocol et de transformer la commande obtenur en chaîne de
+dans le module Protocol et de transformer la commande obtenue en chaîne de
 caractère, grâce à la fonction string\_of\_command du fichier protocol.ml  
 
-Le traitement des commandes se reposera par la suite sur les
-ce type somme défini et les fonctions associées à sa manipulation.
+Le traitement des commandes se reposera par la suite sur le type somme
+défini et les fonctions associées à sa manipulation.
 
 \section{Connexion}
 
@@ -70,72 +105,113 @@ connectant, la partie est lancée, dans un autre thread.
 
 \section{Structures de données}
 
-Lors de la connexion, la structure représentant le \emph{joueur} est alors initialisée. Elle comprend :
-\begin{itemize}
-\item son nom
-\item la socket grâce à laquelle il communique avec le serveur
-\item son thread
-\item son role dans la partie, qui peut être 'undefined', 'drawer' ou 'guesser'
-\item un booléen pour préciser s'il a déjà dessiné dans la partie
-\item un booléen indiquant s'il a trouvé le mot à ce 'round'
-\item son score du 'round'
-\end{itemize}
+Lors de la connexion, la structure représentant le \emph{joueur} est
+alors initialisée.
+
+\begin{OCaml}
+type player = {
+  chan : Unix.file_descr; (*la socket par laquelle le serveur communique*)
+  thread : Thread.t;
+  name : string;
+  mutable role : role; 
+  mutable already_draw : bool; (*s'il a deja dessine pendant la partie *)
+  mutable has_found : bool; (* s'il a deja trouve le mot*)
+  mutable score_round : int; 
+}
+type role =
+  | Undefined
+  | Drawer
+  | Guesser 
+
+\end{OCaml}
 
 Le role du joueur est représenté par un type somme qui nous permettra
 aisément de vérifier si une commande est licite à un moment de la partie
 donné selon son rôle.
 
-Les joueurs sont stockés dans une liste (de taille maximale max donc),
+Les joueurs sont stockés dans une liste (de taille maximale max),
 ce qui permet d'utiliser les nombreuses fonctions du module List. 
 Les spectateurs, stockés dans une autre liste, ne sont représentés que par leur socket.
 
 Ces listes sont dans une structure représentant l'état de la
 partie du \emph{server} :
-\begin{itemize}
-\item la liste des joueurs connectés
-\item la liste des spectateurs représentés par leur socket
-\item une liste des mots déjà sortis lors du round
-\item un booléen indiquant si la partie est en cours
-\item la liste des commandes envoyées depuis le début de la partie
-\end{itemize}
 
-Le type état est représenté par un type somme (Alive ou Dead). Il peut paraître ici assez inutile, mais il a été implémenté initialement dans l'objectif de réaliser d'extensions qui n'ont finalement jamais vu le jour (réparer un bateau, lancer une épidémie, ...).
+\begin{OCaml}
+type server = {
+  mutable players : player list;
+  mutable spectators : Unix.file_descr list;
+  mutable mots_rounds : string list; (*les mots deja sortis pour
+  eviter de tomber sur les meme mots*)
+  mutable is_game_started : bool;
+  mutable commandes : Protocol.command list (* les commandes envoyees
+  depuis le debut de la partie*)
+}
 
-Le \emph{round} est représenté par une structure comprenant 
-\begin{itemize}
-\item un timer
-\item le joueur dessinateur
-\item le nom du premier à avoir trouvé
-\item le mot à trouver
-\item le compteur du nombre de joueur ayant trouvé le mot
-\item le nombre de joueur ayant dénoncé le dessinateur
-\item la couleur courante (par défaut noir)
-\item la taille courante (par défaut 0)
-\end{itemize}
+
+\end{OCaml}
+
+Le \emph{round} est représenté par la structure présentée
+ci-dessous :
+
+\begin{OCaml}
+type round = {
+  timer : timer;
+  mutable drawer : player option;
+  mutable winner : string option;(*nom du premier joueur ayant trouve*)
+  mutable word_to_find : string;
+  mutable cpt_found : int; (* nombre de joueur ayant trouve le mot*)
+  mutable nb_cheat_report : int;
+  mutable color : color; (* par defaut noir*)
+  mutable size : int; (* par defaut 0*)
+}
+\end{OCaml}
 
 Et enfin, le \emph{timer}, qui a été implémenté en objet, pour pouvoir le 
 manipuler facilement avec un accès simple aux méthodes.
 Ce timer est créé avec un temps initial (le temps de la partie) et une
 fonction de callback (ici, next\_round). Il comprend :
-\begin{itemize}
-\item le temps total de la partie
-\item un booléen indiquant s'il est en train de tourner
-\item des mutexs sur ces variables
-\item une méthode pour lancer le timer
-\item une méthode qui le réinitialise
-\item une méthode d'accès et de modification du temps
-\item une méthode qui arrête le timer.
-\end{itemize}
+\begin{OCaml}
+class timer init_delay callback = 
+object(self)
+  val mutable time = init_delay 
+  val mutable running = false
+  val mutex_delay = Mutex.create ()
+  val mutex_running = Mutex.create ()
+  method start_count ();
+  method restart_count ();
+  method get_current_delay;
+  method set_delay new_delay;
+  method stop_timer ();
+end
+\end{OCaml}
 
 \section{Extensions réalisées}
 
 \subsection{Discussion instantanée}
 
-Cette extension a été plutôt aisée à implémenter, dès que le serveur reçoit la commande ``TALK'' correctement formée, il renvoie à tout le monde (clients et spectateurs) le message passé en argument précédé de son émetteur. Le split de la commande permet de respecter le protocole.
+Cette extension a été plutôt simple à implémenter, dès que le serveur
+reçoit la commande \emph{Talk message} correctement formée, il renvoie
+à tout le monde (clients et spectateurs) le message passé en argument
+précédé de son émetteur. 
+
+\subsection{Courbes de Bézier}
+
+Du côté serveur, cette extension est de la même manière rapide à
+implémenter.
+Il a juste fallu ajouter une commande au protocole fourni pour
+permettre au dessinateur de dessiner une courbe : ``SET\_COURBE/x1/y1/x2/y2/x3/y3/x4/y4/''. 
 
 \subsection{Spectateurs}
 
-Pour cette extension, il a fallu ajouter un mécanisme qui stocke les commandes voulues et les envoie aux spectateurs déjà présents. Dès qu'un spectateur se connecte, il reçoit alors la liste des commandes stockées. Grâce au split des commandes, il a suffi de changer le nom de la commande (``PUTSHIP'' en ``PLAYERSHIP'', ...) qui correspond au premier élément de la liste résultante.
+Pour cette extension, j'ai supposé que les seules commandes à envoyer
+au spectateur est celle envoyées à tous les joueurs. Il a donc fallu
+ajouter l'envoi des commandes aux spectateurs présents lorsqu'on fait
+appel à la fonction \emph{broadcast} et de stocker la commande pour
+permettre l'envoie de toutes les commandes précédemment envoyées
+depuis le début de la partie, à un spectateur se connectant en pleine
+partie
+
+
 
 \section{Architecture}
 
@@ -149,29 +225,21 @@ les commandes déjà effectuées et d'ajouter sa socket à la structure du
 server. La première effectue une boucle qui match les commandes reçues
 afin de lancer le traitement adapté selon son rôle.
 
-Ci-suit une liste des modules :
-\begin{itemize}
-\item RegExp : stocke les expressions régulières, mais elles ont été beaucoup moins utilisées que pensé initialement
-\item Utils : toutes les fonctions utilitaires, ne se rapportant pas spécifiquement à un autre module
-\item Next : gère le correct enchaînement des ``YOURTURN''
-\item Register : gère les comptes utilisateurs
-\item Stop : gère les déconnexions
-\item Connexion : cf plus haut
-\item Placement : gère la phase de placement des bateaux (et oui, quel nom adéquat !)
-\item End\_of\_game : gère la fin de partie (plus ou moins bien, des tests exhaustifs n'ont pas été effectués)
-\item Game : gère les phases d'actions
-\end{itemize}
-
 \section{Choix d'implémentation}
 L'énoncé étant parfois libre de choix, voici les décisions prises les
 concernant :
  \begin{itemize}
-\item fin partie
-\item pass
-\item pas de connexions joueurs en cours de partie
-\item spectator : pas chat
+\item Pour la commande Pass, j'ai respecté ce qui est décrit dans
+  l'énoncé : cela produit un effet que si aucun joueur n'a deja trouvé
+  le mot. Donc si un joueur a trouvé le mot, Pass ne marche pas du tout.
+\item fin partie TODO L'enchaînement de plusieurs parties n'est pas géré.
+\item La connexion d'un joueur en cours de partie n'est pas autorisé,
+  pour éviter qu'un joueur ne commance la partie en ayant du retard au
+  niveau des points. 
+\item Les possibilités du spectators ne sont pas bien précisé, j'ai
+  donc supposé qu'après se connexions, il ne pouvait que quitter le
+  jeu avec la commande Exit. Cette commande prenant un nom en
+  argument, elle est acceptée avec n'importe quel nom.
 \end{itemize}
-
-Bon jeu !
 
 \end{document}

@@ -10,10 +10,6 @@ type role =
   | Undefined
   | Drawer
   | Guesser 
-      
-(*type player_state =
-  | Waiting
-  | Playing*)
 
 type player = {
   chan : Unix.file_descr;
@@ -22,9 +18,7 @@ type player = {
   mutable role : role;
   mutable already_draw : bool;
   mutable has_found : bool;
-  (*mutable state : player_state;*)
   mutable score_round : int;
- (* mutable score : int;*)
 }
 
 type color = {
@@ -104,14 +98,14 @@ let current_round = ref None
 
 (*************   Args   *************)
 
-let timeout = ref 20
-let max = ref 2
+let timeout = ref 30
+let max = ref 4
 let fdico = ref "dico.txt"
 let port = ref 2013
-let nbReport = ref 3
+let nbReport = ref 2
 
 let dico = ref []
-let delay = 60
+let delay = 90
 
 (*************   Utils : args   *************)
 
@@ -319,7 +313,7 @@ let next_round () =
 (**********   Predicates   **********)
 	
 let can_guess = function
-  | { role = Guesser; (*state = Playing;*) has_found = false } -> true
+  | { role = Guesser; has_found = false } -> true
   | _ -> false
 let all_has_found () = 
   List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.players
@@ -379,8 +373,6 @@ let evaluate_word player word =
   else 
     broadcast (Guessed (word, player.name))
 
-      
-
 let evaluate_pass player =
   Mutex.lock mutex_round;
   try 
@@ -399,7 +391,6 @@ let evaluate_exit player name =
   if name = player.name then
     begin
       evaluate_pass player;
-      print_endline "treat exit :";
       treat_exit player
     end
       
@@ -409,7 +400,7 @@ let evaluate_cheat player name =
     begin 
       let round = get_opt !current_round in
       match round.drawer with
-	| None -> () (* cheat : drawer deja parti*)
+	| None -> ()
 	| Some drawer ->
 	  round.nb_cheat_report <- round.nb_cheat_report +1;
 	  if round.nb_cheat_report >= !nbReport then
