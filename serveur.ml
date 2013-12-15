@@ -1,7 +1,7 @@
 open Protocol
 open Parser
 
-(** types *)
+(*************    types   *************)
 
 exception Closed_connection
 exception None_Exception
@@ -236,12 +236,10 @@ let finalize_name name =
 let treat_exit player =
   Mutex.lock mutex_server;
   Unix.close player.chan;
-  print_endline "chan closed";
   remove_player player;
-  print_endline "player removed";
   Mutex.unlock mutex_server;
   broadcast (Exited player.name);
-  Thread.exit ()
+  Thread.kill player.thread 
 
 
 (*************   Gestion partie   *************)
@@ -266,13 +264,11 @@ let next_round () =
   if round.nb_cheat_report < !nbReport then
     begin 
       let liste_score = (List.map (fun {name=n; score_round=s;} -> (n,s)) server.players)in
-      List.iter (fun (n,s) -> print_endline (n^" : "^(string_of_int s))) liste_score;
       broadcast (Score_round liste_score)
     end
   else (* cheat ! *)
     broadcast (Score_round (List.map (function {name=n; } -> (n,0)) server.players));
   
-  (* Update drawer / guessers *)
   let rec update_roles l =
     match l with
       | ({role=Drawer; } as curr_drawer)::t ->
@@ -306,9 +302,8 @@ let next_round () =
   with 
     | Pervasives.Exit ->
       Mutex.unlock mutex_round;
-      List.iter (fun p -> treat_exit p) server.players;
-      init_server ();
-      print_endline "End game"
+      List.iter (fun p -> treat_exit p) (List.rev server.players);
+      init_server ()
 	
 (**********   Predicates   **********)
 	
@@ -318,7 +313,7 @@ let can_guess = function
 let all_has_found () = 
   List.for_all (fun c -> c.role = Drawer || c.has_found = true ) server.players
     
-(* Handlers *)
+(**********   Handlers   **********)
     
 let give_score player round =
   Mutex.lock mutex_round;
@@ -384,7 +379,7 @@ let evaluate_pass player =
 	round.drawer <- None;
       end;
     Mutex.unlock mutex_round
-  with | None_Exception -> Mutex.unlock mutex_round; print_endline "no round"
+  with | None_Exception -> Mutex.unlock mutex_round
  
       
 let evaluate_exit player name =
@@ -477,32 +472,26 @@ let player_scheduling player =
   try 
     loop ()
   with 
-      (* todo handle proper exceptions. E.g : connection lost *)
     | Closed_connection -> 
       Printf.eprintf "[Warning] Connection lost with player : %s - removing him\n%!" player.name;
       evaluate_exit player player.name
 
 let start_playing () =
-  (* Peut-etre un mutex à caler dans cette fonction pour les etats *)
+    Mutex.lock mutex_server;
+    List.iter (fun p -> p.role <- Guesser) server.players;
+    (List.hd server.players).role <- Drawer;
+    Mutex.unlock mutex_server;
+    current_round := Some { timer= new timer delay next_round;
+			    drawer= Some (List.hd server.players);
+			    winner = None;			  
+			    word_to_find= new_word ();
+			    cpt_found = 0;
+			    nb_cheat_report = 0;
+			    color = {r=0;g=0;b=0};
+			    size = 0};
+    play_round ()
 
-  (* Tous deviennent joueur *)
-  Mutex.lock mutex_server;
-  List.iter (fun p -> (*p.state <- Playing;*) p.role <- Guesser) server.players;
-  (* Le premier dessine, les autres devinent *)
-  (List.hd server.players).role <- Drawer;
-  Mutex.unlock mutex_server;
-  
-  current_round := Some { timer= new timer delay next_round;
-			  drawer= Some (List.hd server.players);
-			  winner = None;			  
-			  word_to_find= new_word ();
-			  cpt_found = 0;
-			  nb_cheat_report = 0;
-			  color = {r=0;g=0;b=0};
-			  size = 0};
-  play_round ()
-    
-(** Connections *)
+(**********   Connections   **********)
 
 let await_connect sock_descr = 
   let rec loop () =
@@ -526,9 +515,7 @@ let start_player player_name sock_descr =
     ; role = Undefined
     ; already_draw = false
     ; has_found = false
-    (*; state = Waiting*)
     ; score_round = 0
-    (*; score = 0*)
     } in
   add_player player;
   broadcast (Connected player_name);
@@ -586,8 +573,7 @@ let start_server port =
     let sd, _ = ThreadUnix.accept sock in
     begin
       Unix.setsockopt sd Unix.SO_REUSEADDR true;
-      ignore (Thread.create init_new_client sd);
-      print_endline "th client lance"
+      ignore (Thread.create init_new_client sd)
     end
   done
 
